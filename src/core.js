@@ -293,7 +293,14 @@ window.__minibiaBotBundle.createBot = function createBot() {
       return window.gameClient?.player?.state || null;
     },
     getPlayerName() {
-      return String(this.getPlayerState()?.name || "").trim() || null;
+      return (
+        String(
+          this.getPlayerState()?.name ||
+          window.gameClient?.player?.name ||
+          window.gameClient?.player?.state?.name ||
+          ""
+        ).trim() || null
+      );
     },
     sendChat(text) {
       const channelManager = window.gameClient?.interface?.channelManager;

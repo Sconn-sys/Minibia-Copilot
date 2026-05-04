@@ -675,7 +675,6 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
                 <span>Auto Reply</span>
               </label>
               <input type="password" id="minibia-bot-talk-api-key" placeholder="Gemini API key" />
-              <input type="text" id="minibia-bot-talk-model" placeholder="Gemini model" />
               <textarea id="minibia-bot-talk-prompt" placeholder="Reply style prompt"></textarea>
               <div class="mb-small-note" id="minibia-bot-talk-status">Status: idle</div>
               <div class="mb-small-note">Replies are sent to the currently active game chat channel.</div>
@@ -708,7 +707,6 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     const autoEatEnabledInput = panel.querySelector("#minibia-bot-auto-eat-enabled");
     const talkEnabledInput = panel.querySelector("#minibia-bot-talk-enabled");
     const talkApiKeyInput = panel.querySelector("#minibia-bot-talk-api-key");
-    const talkModelInput = panel.querySelector("#minibia-bot-talk-model");
     const talkPromptInput = panel.querySelector("#minibia-bot-talk-prompt");
     const panicGmNameInput = panel.querySelector("#minibia-bot-panic-gm-input");
     const panicGmAddButton = panel.querySelector("#minibia-bot-panic-gm-add");
@@ -856,13 +854,6 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
       });
     }
 
-    if (talkModelInput) {
-      talkModelInput.value = bot.talk?.config?.model || "";
-      talkModelInput.addEventListener("change", () => {
-        bot.talk.updateConfig({ model: talkModelInput.value.trim() });
-      });
-    }
-
     if (talkPromptInput) {
       talkPromptInput.value = bot.talk?.config?.systemPrompt || "";
       talkPromptInput.addEventListener("change", () => {
@@ -876,7 +867,6 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
         if (talkEnabledInput.checked) {
           bot.talk.updateConfig({
             apiKey: talkApiKeyInput?.value?.trim() || "",
-            model: talkModelInput?.value?.trim() || "",
             systemPrompt: talkPromptInput?.value?.trim() || "",
           });
           const started = bot.talk.start();
