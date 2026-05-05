@@ -29,7 +29,6 @@ This repo now has a simple source layout for browser-loaded Minibia routines, wh
 - [src/core.js](/home/yuno/minibia-bot/src/core.js): shared runtime helpers
 - [src/modules/pz.js](/home/yuno/minibia-bot/src/modules/pz.js): PZ/home navigation module
 - [src/modules/rune.js](/home/yuno/minibia-bot/src/modules/rune.js): rune loop module
-- [src/modules/talk.js](/home/yuno/minibia-bot/src/modules/talk.js): Gemini-powered chat reply module
 - [src/ui/panel.js](/home/yuno/minibia-bot/src/ui/panel.js): draggable in-game panel
 - [src/main.js](/home/yuno/minibia-bot/src/main.js): bundle entrypoint
 - [build.sh](/home/yuno/minibia-bot/build.sh): rebuilds `pz-bot.js` from `src/`
@@ -64,9 +63,6 @@ minibiaBot.rune.start()
 minibiaBot.rune.stop()
 minibiaBot.rune.status()
 
-minibiaBot.talk.start()
-minibiaBot.talk.stop()
-minibiaBot.talk.status()
 ```
 
 Backward-compatible alias:
@@ -86,4 +82,3 @@ pzBot.goToNearestPz()
 - The panel is draggable and saves its position in `localStorage`.
 - Reloading the bundle destroys the existing panel and stops the existing loops before installing the new one.
 - The served runtime is `pz-bot.js`; source lives under `src/`.
-- The talk module currently uses the Gemini API directly from the browser with your API key stored in `localStorage`, so use a low-privilege personal key.

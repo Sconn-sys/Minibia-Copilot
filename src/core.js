@@ -281,10 +281,6 @@ window.__minibiaBotBundle.createBot = function createBot() {
         this.eat.stop();
       }
 
-      if (this.talk?.stop) {
-        this.talk.stop();
-      }
-
       if (this.ui?.destroy) {
         this.ui.destroy();
       }
