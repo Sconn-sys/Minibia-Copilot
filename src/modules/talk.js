@@ -2,9 +2,16 @@ window.__minibiaBotBundle = window.__minibiaBotBundle || {};
 
 window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
   const configStorageKey = "minibiaBot.talk.config";
-  const defaultModel = "gemini-3-pro-preview";
+  const legacyDefaultModels = ["gemini-3-pro-preview", "gemini-2.0-flash"];
+  const defaultModel = "gemini-2.5-flash-lite";
   const defaultSystemPrompt =
-    "You are a normal Minibia player chatting in-game. Reply with one short natural sentence. Vary your wording, tone, and phrasing. Keep it under 90 characters and under 12 words. Plain text only. If you do not know the answer to a question, reply with ?. Never say you are a bot or AI.";
+    "You are a normal Minibia player chatting in-game. Reply with one short natural sentence. Vary your wording, tone, and phrasing. Keep it under 90 characters and under 12 words. Plain text only. Never say you are a bot or AI.";
+  const defaultGreetingPrompt =
+    "Respond to greetings like a normal player. Be short, casual, and friendly. One sentence only. Plain text only.";
+  const defaultQuestionPrompt =
+    "Respond to questions like a normal player, but stay vague and noncommittal. Do not explain much. One short sentence only. Plain text only. If asked whether you are a bot, reply with no.";
+  const defaultStatementPrompt =
+    "Respond to statements like a normal player. Keep it short, casual, and natural. One sentence only. Plain text only.";
   const minPollMs = 1000;
   const maxMessageAgeMs = 2 * 60 * 1000;
   const state = {
@@ -17,8 +24,8 @@ window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
   };
   const greetingReplies = ["yo", "sup", "hey", "hiya", "yo lol"];
   const agreeReplies = ["true", "fr", "based", "ya", "real"];
-  const unsureReplies = ["?", "idk", "not sure", "hard to say"];
-  const denyBotReplies = ["nah", "no lol", "nope"];
+  const vagueQuestionReplies = ["maybe", "not sure", "hard to say", "could be"];
+  const denyBotReplies = ["no", "nope", "nah"];
 
   const config = Object.assign(
     {
@@ -28,6 +35,9 @@ window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
       pollMs: minPollMs,
       replyCooldownMs: 1500,
       systemPrompt: defaultSystemPrompt,
+      greetingPrompt: defaultGreetingPrompt,
+      questionPrompt: defaultQuestionPrompt,
+      statementPrompt: defaultStatementPrompt,
     },
     bot.storage.get(configStorageKey, {})
   );
@@ -46,9 +56,15 @@ window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
   function sanitizeConfig() {
     config.apiKey = String(config.apiKey || "").trim();
     config.model = String(config.model || defaultModel).trim() || defaultModel;
+    if (legacyDefaultModels.includes(config.model)) {
+      config.model = defaultModel;
+    }
     config.pollMs = Math.max(minPollMs, Number(config.pollMs) || minPollMs);
     config.replyCooldownMs = Math.max(0, Number(config.replyCooldownMs) || 1500);
     config.systemPrompt = String(config.systemPrompt || defaultSystemPrompt).trim() || defaultSystemPrompt;
+    config.greetingPrompt = String(config.greetingPrompt || defaultGreetingPrompt).trim() || defaultGreetingPrompt;
+    config.questionPrompt = String(config.questionPrompt || defaultQuestionPrompt).trim() || defaultQuestionPrompt;
+    config.statementPrompt = String(config.statementPrompt || defaultStatementPrompt).trim() || defaultStatementPrompt;
   }
 
   function trimSeen() {
@@ -114,6 +130,7 @@ window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
       String(entry?.author || entry?.sender || entry?.name || parsed.sender || "").trim() || null;
     const body = String(entry?.text || parsed.body || rawMessage).trim();
     const time = entry?.__time || entry?.time || null;
+    const senderType = entry?.type;
     const key = [
       rawEntry?.channelName || "",
       time || "",
@@ -129,6 +146,7 @@ window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
       body,
       rawMessage,
       time,
+      senderType,
     };
   }
 
@@ -192,6 +210,11 @@ window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
     return [message?.body, message?.rawMessage].some((text) => bot.isRecentSentChat?.(text, 20000));
   }
 
+  function isNpcMessage(message) {
+    const npcType = window.CONST?.TYPES?.NPC;
+    return npcType != null && message?.senderType === npcType;
+  }
+
   function getDefaultMessages() {
     return getChatMessages().filter((message) => message.channelName === "Default");
   }
@@ -206,7 +229,7 @@ window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
         return false;
       }
 
-      if (!message.sender || isSelfMessage(message)) {
+      if (!message.sender || isSelfMessage(message) || isNpcMessage(message)) {
         rememberSeenMessage(message);
         return false;
       }
@@ -230,30 +253,59 @@ window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
     };
   }
 
-  function buildPrompt(targetMessage, contextMessages) {
+  function buildClassifierPrompt(targetMessage, contextMessages) {
+    const transcript = contextMessages
+      .map((message) => `${message.sender || "player"}: ${message.body}`)
+      .join("\n");
+
+    return [
+      "Channel: Default",
+      "Recent chat:",
+      transcript || "(none)",
+      "",
+      `Last message from ${targetMessage.sender}: ${targetMessage.body}`,
+      "Classify the last message as exactly one label:",
+      "greeting",
+      "question",
+      "statement",
+      "Reply with the label only.",
+    ].join("\n");
+  }
+
+  function getTypePrompt(messageType) {
+    if (messageType === "greeting") {
+      return config.greetingPrompt;
+    }
+
+    if (messageType === "question") {
+      return config.questionPrompt;
+    }
+
+    return config.statementPrompt;
+  }
+
+  function buildReplyPrompt(targetMessage, contextMessages, messageType) {
     const transcript = contextMessages
       .map((message) => `${message.sender || "player"}: ${message.body}`)
       .join("\n");
 
     return [
       config.systemPrompt,
+      getTypePrompt(messageType),
       "",
       "Channel: Default",
+      `Message type: ${messageType}`,
       "Recent chat:",
       transcript || "(none)",
       "",
       `Last message from ${targetMessage.sender}: ${targetMessage.body}`,
       "Reply with one short sentence only.",
-      "For greetings like hi/sup/howdy, answer with a short greeting.",
-      "If asked whether you are a bot, always deny it briefly.",
-      "For simple reactions like based/true/lol, answer naturally and briefly.",
-      "If you do not know the answer, reply with ?",
       "Avoid repeating the same wording again and again.",
       "Reply text only:",
     ].join("\n");
   }
 
-  async function generateReply(prompt) {
+  async function generateText(prompt, generationConfig = {}) {
     const response = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(config.model)}:generateContent`,
       {
@@ -269,11 +321,14 @@ window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
               parts: [{ text: prompt }],
             },
           ],
-          generationConfig: {
-            temperature: 0.9,
-            topP: 0.95,
-            maxOutputTokens: 40,
-          },
+          generationConfig: Object.assign(
+            {
+              temperature: 0.9,
+              topP: 0.95,
+              maxOutputTokens: 40,
+            },
+            generationConfig
+          ),
         }),
       }
     );
@@ -290,6 +345,30 @@ window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
         .join(" ")
         .trim() || ""
     );
+  }
+
+  async function classifyMessageType(targetMessage, contextMessages) {
+    const rawType = normalizeText(
+      await generateText(buildClassifierPrompt(targetMessage, contextMessages), {
+        temperature: 0.1,
+        topP: 0.8,
+        maxOutputTokens: 8,
+      })
+    );
+
+    if (rawType === "greeting" || rawType === "question" || rawType === "statement") {
+      return rawType;
+    }
+
+    if (isGreeting(targetMessage?.body)) {
+      return "greeting";
+    }
+
+    if (/\?/.test(String(targetMessage?.body || ""))) {
+      return "question";
+    }
+
+    return "statement";
   }
 
   function sanitizeReply(text) {
@@ -350,14 +429,14 @@ window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
     return /^(based|true|real|lol|lmao|xd|nice|ok|kk|k)\b[!.?]*$/i.test(String(text || "").trim());
   }
 
-  function pickFallbackReply(targetMessage) {
+  function pickFallbackReply(targetMessage, messageType) {
     const messageText = String(targetMessage?.body || "").trim();
 
     if (isBotQuestion(messageText)) {
-      return pickUnusedReply(denyBotReplies, 30000, "nah");
+      return pickUnusedReply(denyBotReplies, 30000, "no");
     }
 
-    if (isGreeting(messageText)) {
+    if (messageType === "greeting" || isGreeting(messageText)) {
       return pickUnusedReply(greetingReplies, 15000, "yo");
     }
 
@@ -365,8 +444,8 @@ window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
       return pickUnusedReply(agreeReplies, 15000, "true");
     }
 
-    if (/\?$/.test(messageText)) {
-      return pickUnusedReply(unsureReplies, 20000, "?");
+    if (messageType === "question" || /\?$/.test(messageText)) {
+      return pickUnusedReply(vagueQuestionReplies, 20000, "maybe");
     }
 
     return pickUnusedReply(["lol", "maybe", "ya", "true", "kinda"], 30000, "lol");
@@ -390,8 +469,11 @@ window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
 
     try {
       const contextMessages = getDefaultMessages().slice(-6);
-      const rawReply = await generateReply(buildPrompt(pending.targetMessage, contextMessages));
-      const reply = sanitizeReply(rawReply) || pickFallbackReply(pending.targetMessage);
+      const messageType = await classifyMessageType(pending.targetMessage, contextMessages);
+      const rawReply = isBotQuestion(pending.targetMessage.body)
+        ? "no"
+        : await generateText(buildReplyPrompt(pending.targetMessage, contextMessages, messageType));
+      const reply = sanitizeReply(rawReply) || pickFallbackReply(pending.targetMessage, messageType);
 
       rememberSeenMessages(pending.pendingMessages);
 
@@ -399,6 +481,7 @@ window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
         bot.log("talk skipped reply", {
           sender: pending.targetMessage.sender,
           message: pending.targetMessage.body,
+          messageType,
           rawReply,
         });
         return false;
@@ -410,6 +493,7 @@ window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
         bot.log("talk replied", {
           sender: pending.targetMessage.sender,
           message: pending.targetMessage.body,
+          messageType,
           reply,
         });
       }
