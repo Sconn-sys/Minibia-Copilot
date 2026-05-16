@@ -8,21 +8,12 @@ window.__minibiaBotBundle.installPanicModule = function installPanicModule(bot) 
     lastHealth: null,
     lastTriggerAt: 0,
     lastDamageEventKey: null,
-    pendingReturnOrigin: null,
-    pendingReturnModules: null,
-    returnNotBeforeAt: 0,
-    lastThreatAt: 0,
-    lastReturnAttemptAt: 0,
   };
 
   const config = Object.assign(
     {
       tickMs: 200,
       triggerCooldownMs: 4000,
-      returnToOriginEnabled: true,
-      returnDelayMs: 300000,
-      returnDelayJitterMs: 30000,
-      returnRetryCooldownMs: 2000,
       unknownPlayerEnabled: false,
       healthLossEnabled: false,
       trustedNames: [],
@@ -37,26 +28,6 @@ window.__minibiaBotBundle.installPanicModule = function installPanicModule(bot) 
 
   function normalizeName(name) {
     return String(name || "").trim().toLowerCase();
-  }
-
-  function normalizeDelayMs(value, fallback = 0) {
-    const next = Math.trunc(Number(value));
-    return Number.isFinite(next) ? Math.max(0, next) : fallback;
-  }
-
-  function normalizePosition(position) {
-    const x = Number(position?.x);
-    const y = Number(position?.y);
-    const z = Number(position?.z);
-    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
-      return null;
-    }
-
-    return { x, y, z };
-  }
-
-  function isSamePosition(left, right) {
-    return !!left && !!right && left.x === right.x && left.y === right.y && left.z === right.z;
   }
 
   function getTrustedNames() {
@@ -161,129 +132,21 @@ window.__minibiaBotBundle.installPanicModule = function installPanicModule(bot) 
     return messages[0] || null;
   }
 
-  function getReturnDelayMs() {
-    const baseDelayMs = normalizeDelayMs(config.returnDelayMs, 0);
-    const jitterMs = normalizeDelayMs(config.returnDelayJitterMs, 0);
-    if (!jitterMs) {
-      return baseDelayMs;
-    }
-
-    const randomOffset = Math.floor(Math.random() * ((jitterMs * 2) + 1)) - jitterMs;
-    return Math.max(0, baseDelayMs + randomOffset);
-  }
-
-  function clearPendingReturn() {
-    state.pendingReturnOrigin = null;
-    state.pendingReturnModules = null;
-    state.returnNotBeforeAt = 0;
-    state.lastThreatAt = 0;
-    state.lastReturnAttemptAt = 0;
-  }
-
-  function snapshotInterruptedModules() {
-    return {
-      caveRunning: !!bot.cave?.status?.().running,
-      equipRingRunning: !!bot.equipRing?.status?.().running,
-    };
-  }
-
-  function armPendingReturn(now = Date.now(), origin = normalizePosition(bot.getPlayerPosition())) {
-    if (!config.returnToOriginEnabled) {
-      clearPendingReturn();
-      return;
-    }
-
-    if (!state.pendingReturnOrigin && origin) {
-      state.pendingReturnOrigin = origin;
-      state.pendingReturnModules = snapshotInterruptedModules();
-    }
-
-    if (!state.pendingReturnOrigin) {
-      return;
-    }
-
-    state.lastThreatAt = now;
-    state.returnNotBeforeAt = now + getReturnDelayMs();
-  }
-
-  function isReturnCoastClear() {
-    return !getVisibleGameMasters().length && !getUnknownVisiblePlayers().length;
-  }
-
-  function restoreInterruptedModules() {
-    if (state.pendingReturnModules?.caveRunning) {
-      bot.cave?.start?.();
-    }
-
-    if (state.pendingReturnModules?.equipRingRunning) {
-      bot.equipRing?.start?.();
-      bot.ui?.refreshEquipRingStatus?.();
-    }
-  }
-
-  function tryReturnToOrigin(now = Date.now()) {
-    if (!config.returnToOriginEnabled || !state.pendingReturnOrigin || !state.returnNotBeforeAt) {
-      return false;
-    }
-
-    if (now < state.returnNotBeforeAt) {
-      return false;
-    }
-
-    if (!isReturnCoastClear()) {
-      return false;
-    }
-
-    if (now - state.lastReturnAttemptAt < normalizeDelayMs(config.returnRetryCooldownMs, 2000)) {
-      return false;
-    }
-
-    const currentPosition = normalizePosition(bot.getPlayerPosition());
-    if (isSamePosition(currentPosition, state.pendingReturnOrigin)) {
-      bot.log("panic return completed", {
-        origin: state.pendingReturnOrigin,
-        threatAgeMs: now - state.lastThreatAt,
-      });
-      restoreInterruptedModules();
-      clearPendingReturn();
-      return true;
-    }
-
-    state.lastReturnAttemptAt = now;
-    const moved =
-      !!bot.cave?.goToPosition?.(state.pendingReturnOrigin) ||
-      !!bot.pz?.goToTile?.({ __position: state.pendingReturnOrigin });
-
-    if (moved) {
-      bot.log("panic returning to origin", {
-        origin: state.pendingReturnOrigin,
-        threatAgeMs: now - state.lastThreatAt,
-      });
-      return true;
-    }
-
-    bot.log("panic return pathing failed", { origin: state.pendingReturnOrigin });
-    return false;
-  }
-
   function triggerPanic(reason, details = {}) {
-    const now = Date.now();
-    armPendingReturn(now);
-
-    if (now - state.lastTriggerAt < config.triggerCooldownMs) {
+    if (Date.now() - state.lastTriggerAt < config.triggerCooldownMs) {
       return false;
     }
 
-    state.lastTriggerAt = now;
+    state.lastTriggerAt = Date.now();
     bot.playAlarm?.();
     bot.log("panic triggered", { reason, ...details });
 
     if (bot.cave?.stop) {
-      bot.cave.stop({ persistEnabled: false });
+      bot.cave.stop();
     }
 
     if (bot.equipRing?.stop) {
-      bot.equipRing.stop({ persistEnabled: false });
+      bot.equipRing.stop();
       bot.ui?.refreshEquipRingStatus?.();
     }
 
@@ -428,10 +291,7 @@ window.__minibiaBotBundle.installPanicModule = function installPanicModule(bot) 
     if (!state.running) return;
 
     try {
-      const triggered = checkGameMasters() || checkUnknownPlayers() || checkHealthLoss();
-      if (!triggered) {
-        tryReturnToOrigin();
-      }
+      checkGameMasters() || checkUnknownPlayers() || checkHealthLoss();
     } finally {
       scheduleNextTick();
     }
@@ -469,7 +329,6 @@ window.__minibiaBotBundle.installPanicModule = function installPanicModule(bot) 
 
     state.lastHealth = null;
     state.lastDamageEventKey = null;
-    clearPendingReturn();
     bot.log("panic runner stopped");
     return true;
   }
@@ -497,29 +356,7 @@ window.__minibiaBotBundle.installPanicModule = function installPanicModule(bot) 
         .filter(Boolean);
     }
 
-    if ("triggerCooldownMs" in next) {
-      next.triggerCooldownMs = normalizeDelayMs(next.triggerCooldownMs, config.triggerCooldownMs);
-    }
-
-    if ("returnDelayMs" in next) {
-      next.returnDelayMs = normalizeDelayMs(next.returnDelayMs, config.returnDelayMs);
-    }
-
-    if ("returnDelayJitterMs" in next) {
-      next.returnDelayJitterMs = normalizeDelayMs(next.returnDelayJitterMs, config.returnDelayJitterMs);
-    }
-
-    if ("returnRetryCooldownMs" in next) {
-      next.returnRetryCooldownMs = normalizeDelayMs(
-        next.returnRetryCooldownMs,
-        config.returnRetryCooldownMs
-      );
-    }
-
     Object.assign(config, next);
-    if (!config.returnToOriginEnabled) {
-      clearPendingReturn();
-    }
     persistConfig();
     syncRunningState();
     bot.log("panic runner config updated", { ...config });
@@ -556,16 +393,6 @@ window.__minibiaBotBundle.installPanicModule = function installPanicModule(bot) 
       })),
       latestDamageEvent: getLatestDamageEvent(),
       lastTriggerAt: state.lastTriggerAt,
-      pendingReturn: state.pendingReturnOrigin
-        ? {
-            origin: { ...state.pendingReturnOrigin },
-            modules: state.pendingReturnModules ? { ...state.pendingReturnModules } : null,
-            returnNotBeforeAt: state.returnNotBeforeAt,
-            lastThreatAt: state.lastThreatAt,
-            lastReturnAttemptAt: state.lastReturnAttemptAt,
-            coastClear: isReturnCoastClear(),
-          }
-        : null,
     };
   }
 
