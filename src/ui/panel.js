@@ -427,14 +427,8 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
   }
 
   function refreshStatusPillbar() {
-    const container = document.getElementById("minibia-copilot-pillbar");
-    if (!container) return;
-    const html = moduleSummaryDefs.map((def) => {
-      let running = false;
-      try { running = def.getRunning(); } catch (error) { running = false; }
-      return `<span class="mc-pill" data-active="${running ? "true" : "false"}">${def.label}</span>`;
-    }).join("");
-    container.innerHTML = html;
+    // Pillbar replaced by hero image. Kept as no-op so existing callers
+    // (initial render + 1s snapshot timer) don't need rewiring.
   }
 
   function formatNumber(value) {
@@ -830,47 +824,34 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
       }
 
       #minibia-copilot-panel[data-collapsed="true"] .mc-tabs,
-      #minibia-copilot-panel[data-collapsed="true"] .mc-pillbar,
+      #minibia-copilot-panel[data-collapsed="true"] .mc-hero,
       #minibia-copilot-panel[data-collapsed="true"] .mc-body {
         display: none !important;
       }
 
-      #minibia-copilot-panel .mc-pillbar {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 4px;
-        padding: 8px 12px;
-        border-bottom: 1px solid rgba(224, 200, 148, 0.12);
-        background: rgba(0, 0, 0, 0.18);
+      #minibia-copilot-panel .mc-hero {
+        position: relative;
+        height: 96px;
+        padding: 0;
+        border-bottom: 1px solid rgba(224, 200, 148, 0.22);
+        background:
+          radial-gradient(ellipse at center, rgba(40, 28, 12, 0) 0%, rgba(15, 11, 8, 0.55) 100%),
+          rgba(0, 0, 0, 0.25);
+        overflow: hidden;
       }
 
-      #minibia-copilot-panel .mc-pill {
-        display: inline-flex;
-        align-items: center;
-        gap: 4px;
-        padding: 3px 7px;
-        border-radius: 999px;
-        font-size: 10px;
-        font-weight: 600;
-        letter-spacing: 0.02em;
-        background: rgba(224, 200, 148, 0.08);
-        color: #8c7a52;
-        border: 1px solid transparent;
+      #minibia-copilot-panel .mc-hero img {
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        object-position: center;
+        display: block;
+        image-rendering: pixelated;
+        image-rendering: crisp-edges;
       }
 
-      #minibia-copilot-panel .mc-pill[data-active="true"] {
-        background: rgba(120, 220, 130, 0.18);
-        color: #b5ecb8;
-        border-color: rgba(120, 220, 130, 0.35);
-      }
-
-      #minibia-copilot-panel .mc-pill::before {
-        content: "";
-        width: 6px;
-        height: 6px;
-        border-radius: 999px;
-        background: currentColor;
-        opacity: 0.7;
+      #minibia-copilot-panel .mc-hero[hidden] {
+        display: none !important;
       }
 
       #minibia-copilot-panel .mc-tabs {
@@ -1248,7 +1229,9 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
           <button type="button" class="mc-icon-button" id="minibia-copilot-collapse" aria-label="Minimize panel" title="Minimize">−</button>
         </div>
       </div>
-      <div class="mc-pillbar" id="minibia-copilot-pillbar"></div>
+      <div class="mc-hero" id="minibia-copilot-hero">
+        <img src="https://minibia.com/png/minibia-mascot.png" alt="Minibia" referrerpolicy="no-referrer" onerror="this.parentElement.hidden=true" />
+      </div>
       <div class="mc-tabs" id="minibia-copilot-tabs">
         <button type="button" class="mc-tab-button" data-tab="status"><span class="mc-tab-icon">⚡</span><span>Status</span></button>
         <button type="button" class="mc-tab-button" data-tab="combat"><span class="mc-tab-icon">⚔</span><span>Combat</span></button>
