@@ -508,6 +508,95 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
     }
   }
 
+  function escapeHtml(value) {
+    return String(value || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function formatRelativeTime(ms) {
+    const diff = Math.max(0, Date.now() - ms);
+    if (diff < 60000) return Math.round(diff / 1000) + "s ago";
+    if (diff < 3600000) return Math.round(diff / 60000) + "m ago";
+    return Math.round(diff / 3600000) + "h ago";
+  }
+
+  function refreshTrackerStatus() {
+    const status = bot.tracker?.status?.();
+    if (!status) return;
+
+    const enabledInput = document.getElementById("minibia-copilot-tracker-enabled");
+    const intervalInput = document.getElementById("minibia-copilot-tracker-interval");
+    const statusLabel = document.getElementById("minibia-copilot-tracker-status");
+    const list = document.getElementById("minibia-copilot-tracker-list");
+    const deathsList = document.getElementById("minibia-copilot-tracker-deaths");
+
+    if (enabledInput && document.activeElement !== enabledInput) {
+      enabledInput.checked = !!status.running;
+    }
+    if (intervalInput && document.activeElement !== intervalInput) {
+      intervalInput.value = String(Math.round((Number(status.config?.pollIntervalMs) || 120000) / 1000));
+    }
+    if (statusLabel) {
+      if (status.lastError) {
+        statusLabel.textContent = "Status: error — " + String(status.lastError).slice(0, 80);
+      } else if (status.pollInFlight) {
+        statusLabel.textContent = "Status: fetching…";
+      } else if (status.running) {
+        const seen = status.onlineCount ? `${status.onlineCount} online site-wide` : "no online data yet";
+        const lastAt = status.lastPollAt ? formatRelativeTime(status.lastPollAt) : "never";
+        statusLabel.textContent = `Status: running (${seen}, last ${lastAt})`;
+      } else {
+        statusLabel.textContent = "Status: idle";
+      }
+    }
+
+    if (list) {
+      if (!status.tracked.length) {
+        list.innerHTML = '<div class="mc-small-note">No tracked players yet. Add a name above.</div>';
+      } else {
+        list.innerHTML = status.tracked.map((name) => {
+          const online = status.online.includes(name);
+          return (
+            `<div class="mc-tracked-row" data-name="${escapeHtml(name)}">` +
+              `<span class="mc-tracked-name">` +
+                `<span class="mc-tracked-dot" data-online="${online ? "true" : "false"}"></span>` +
+                `<span>${escapeHtml(name)}</span>` +
+              `</span>` +
+              `<button type="button" class="mc-small-button" data-tracker-remove="${escapeHtml(name)}">✕</button>` +
+            `</div>`
+          );
+        }).join("");
+      }
+    }
+
+    if (deathsList) {
+      const deaths = status.recentDeaths || [];
+      if (!deaths.length) {
+        deathsList.innerHTML = '<div class="mc-death-row-empty">No deaths recorded in the last 30 minutes.</div>';
+      } else {
+        deathsList.innerHTML = deaths.map((death) => {
+          const when = new Date(death.at);
+          const time = when.toTimeString().slice(0, 5);
+          const rel = formatRelativeTime(death.at);
+          const levelTag = death.level != null ? ` (lvl ${escapeHtml(death.level)})` : "";
+          return (
+            `<div class="mc-death-row">` +
+              `<div class="mc-death-head">` +
+                `<span>${escapeHtml(death.name)}${levelTag}</span>` +
+                `<span>${escapeHtml(time)} · ${escapeHtml(rel)}</span>` +
+              `</div>` +
+              `<div class="mc-death-body">${escapeHtml(death.description || "")}</div>` +
+            `</div>`
+          );
+        }).join("");
+      }
+    }
+  }
+
   function refreshMagicWallStatus() {
     const enabledInput = document.getElementById("minibia-copilot-magic-wall-enabled");
     const audioInput = document.getElementById("minibia-copilot-magic-wall-audio");
@@ -1013,6 +1102,65 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
         font-size: 12px;
       }
 
+      #minibia-copilot-panel .mc-tracked-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 5px 8px;
+        border-radius: 6px;
+        background: rgba(0, 0, 0, 0.22);
+        border: 1px solid rgba(224, 200, 148, 0.1);
+      }
+
+      #minibia-copilot-panel .mc-tracked-name {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        color: #f7eccf;
+      }
+
+      #minibia-copilot-panel .mc-tracked-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        background: #6b6b6b;
+      }
+
+      #minibia-copilot-panel .mc-tracked-dot[data-online="true"] {
+        background: #65d96b;
+        box-shadow: 0 0 6px rgba(120, 220, 130, 0.6);
+      }
+
+      #minibia-copilot-panel .mc-death-row {
+        padding: 6px 8px;
+        border-radius: 6px;
+        background: rgba(120, 30, 30, 0.18);
+        border: 1px solid rgba(255, 100, 100, 0.18);
+      }
+
+      #minibia-copilot-panel .mc-death-row-empty {
+        padding: 8px;
+        color: #8c7a52;
+        text-align: center;
+        font-style: italic;
+      }
+
+      #minibia-copilot-panel .mc-death-row .mc-death-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        font-weight: 700;
+        color: #ffb0a8;
+      }
+
+      #minibia-copilot-panel .mc-death-row .mc-death-body {
+        margin-top: 2px;
+        color: #d3c49d;
+        font-size: 11px;
+        line-height: 1.3;
+      }
+
       #minibia-copilot-panel .mc-actions {
         display: grid;
         gap: 6px;
@@ -1238,6 +1386,7 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
         <button type="button" class="mc-tab-button" data-tab="survival"><span class="mc-tab-icon">❤</span><span>Survival</span></button>
         <button type="button" class="mc-tab-button" data-tab="navigation"><span class="mc-tab-icon">🗺</span><span>Navigate</span></button>
         <button type="button" class="mc-tab-button" data-tab="utility"><span class="mc-tab-icon">⚙</span><span>Utility</span></button>
+        <button type="button" class="mc-tab-button" data-tab="deaths"><span class="mc-tab-icon">☠</span><span>Deaths</span></button>
       </div>
       <div class="mc-body">
 
@@ -1609,6 +1758,45 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
           </div>
         </div>
 
+        <div class="mc-tab-pane" data-tab="deaths" hidden>
+          <div class="mc-section">
+            <div class="mc-label">Tracker</div>
+            <div class="mc-stack">
+              <label class="mc-toggle">
+                <input type="checkbox" id="minibia-copilot-tracker-enabled" />
+                <span>Poll minibia.com</span>
+              </label>
+              <label class="mc-field" for="minibia-copilot-tracker-interval">
+                <span class="mc-field-label">Poll interval (sec)</span>
+                <input type="number" id="minibia-copilot-tracker-interval" min="30" max="600" placeholder="120" />
+              </label>
+              <div class="mc-small-note" id="minibia-copilot-tracker-status">Status: idle</div>
+            </div>
+          </div>
+
+          <div class="mc-section">
+            <div class="mc-label">Tracked Players</div>
+            <div class="mc-stack">
+              <div class="mc-inline">
+                <input type="text" id="minibia-copilot-tracker-add-input" placeholder="Character name" />
+                <button type="button" class="mc-small-button" id="minibia-copilot-tracker-add">Add</button>
+              </div>
+              <div class="mc-list" id="minibia-copilot-tracker-list"></div>
+            </div>
+          </div>
+
+          <div class="mc-section">
+            <div class="mc-label">Recent Deaths (last 30 min)</div>
+            <div class="mc-stack">
+              <div class="mc-list" id="minibia-copilot-tracker-deaths"></div>
+              <div class="mc-actions mc-actions-inline-two">
+                <button type="button" class="mc-small-button" id="minibia-copilot-tracker-refresh">Refresh Now</button>
+                <button type="button" class="mc-small-button" id="minibia-copilot-tracker-clear">Clear Deaths</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
       </div>
     `;
     document.body.appendChild(panel);
@@ -1644,6 +1832,13 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
     const equipAmuletTypeSelect = panel.querySelector("#minibia-copilot-equip-amulet-type");
     const equipAmuletCustomInput = panel.querySelector("#minibia-copilot-equip-amulet-custom");
     const equipAmuletAutoSwapInput = panel.querySelector("#minibia-copilot-equip-amulet-autoswap");
+    const trackerEnabledInput = panel.querySelector("#minibia-copilot-tracker-enabled");
+    const trackerIntervalInput = panel.querySelector("#minibia-copilot-tracker-interval");
+    const trackerAddInput = panel.querySelector("#minibia-copilot-tracker-add-input");
+    const trackerAddButton = panel.querySelector("#minibia-copilot-tracker-add");
+    const trackerList = panel.querySelector("#minibia-copilot-tracker-list");
+    const trackerRefreshButton = panel.querySelector("#minibia-copilot-tracker-refresh");
+    const trackerClearButton = panel.querySelector("#minibia-copilot-tracker-clear");
     const autoHealEnabledInput = panel.querySelector("#minibia-copilot-auto-heal-enabled");
     const autoHealMinHpInput = panel.querySelector("#minibia-copilot-auto-heal-min-hp");
     const autoHealHpHotkeyInput = panel.querySelector("#minibia-copilot-auto-heal-hp-hotkey");
@@ -1946,6 +2141,71 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
       equipAmuletAutoSwapInput.checked = !!bot.equipAmulet?.config?.autoSwap;
       equipAmuletAutoSwapInput.addEventListener("change", () => {
         bot.equipAmulet?.updateConfig?.({ autoSwap: equipAmuletAutoSwapInput.checked });
+      });
+    }
+
+    if (trackerEnabledInput) {
+      trackerEnabledInput.addEventListener("change", () => {
+        if (trackerEnabledInput.checked) {
+          bot.tracker?.start?.();
+        } else {
+          bot.tracker?.stop?.();
+        }
+        refreshTrackerStatus();
+      });
+    }
+
+    if (trackerIntervalInput) {
+      trackerIntervalInput.addEventListener("change", () => {
+        const seconds = Math.max(30, Math.min(600, Number(trackerIntervalInput.value) || 120));
+        trackerIntervalInput.value = String(seconds);
+        bot.tracker?.updateConfig?.({ pollIntervalMs: seconds * 1000 });
+        refreshTrackerStatus();
+      });
+    }
+
+    function addTrackedFromInput() {
+      const name = trackerAddInput?.value?.trim() || "";
+      if (!name) return;
+      bot.tracker?.addTracked?.(name);
+      if (trackerAddInput) trackerAddInput.value = "";
+      refreshTrackerStatus();
+    }
+
+    if (trackerAddButton) {
+      trackerAddButton.addEventListener("click", addTrackedFromInput);
+    }
+    if (trackerAddInput) {
+      trackerAddInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          addTrackedFromInput();
+        }
+      });
+    }
+
+    if (trackerList) {
+      trackerList.addEventListener("click", (event) => {
+        const target = event.target.closest("[data-tracker-remove]");
+        if (!target) return;
+        const name = target.getAttribute("data-tracker-remove");
+        if (!name) return;
+        bot.tracker?.removeTracked?.(name);
+        refreshTrackerStatus();
+      });
+    }
+
+    if (trackerRefreshButton) {
+      trackerRefreshButton.addEventListener("click", () => {
+        bot.tracker?.pollOnce?.();
+        window.setTimeout(refreshTrackerStatus, 500);
+      });
+    }
+
+    if (trackerClearButton) {
+      trackerClearButton.addEventListener("click", () => {
+        bot.tracker?.clearDeaths?.();
+        refreshTrackerStatus();
       });
     }
 
@@ -2390,6 +2650,7 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
     refreshTalkStatus();
     refreshMagicWallStatus();
     refreshHuntStatus();
+    refreshTrackerStatus();
     refreshVisibleCreatures();
     refreshCavePresetControls();
     refreshCaveClosestStatus();
@@ -2428,6 +2689,11 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
     bot.addCleanup(() => {
       window.clearInterval(snapshotTimerId);
     });
+
+    const trackerTimerId = window.setInterval(refreshTrackerStatus, 5000);
+    bot.addCleanup(() => {
+      window.clearInterval(trackerTimerId);
+    });
   }
 
   bot.ui = {
@@ -2448,6 +2714,7 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
     refreshTalkStatus,
     refreshMagicWallStatus,
     refreshHuntStatus,
+    refreshTrackerStatus,
     refreshVisibleCreatures,
     refreshCaveClosestStatus,
     refreshCaveTransitionStatus,

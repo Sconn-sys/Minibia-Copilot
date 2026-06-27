@@ -8036,6 +8036,456 @@ window.__minibiaCopilotBundle.installHuntModule = function installHuntModule(bot
 };
 window.__minibiaCopilotBundle = window.__minibiaCopilotBundle || {};
 
+window.__minibiaCopilotBundle.installTrackerModule = function installTrackerModule(bot) {
+  const configStorageKey = "minibiaCopilot.tracker.config";
+  const deathsStorageKey = "minibiaCopilot.tracker.deaths";
+  const trackedStorageKey = "minibiaCopilot.tracker.tracked";
+  const seenDeathsStorageKey = "minibiaCopilot.tracker.seenDeathKeys";
+
+  const state = {
+    running: false,
+    pollTimerId: null,
+    expireTimerId: null,
+    lastPollAt: 0,
+    lastOnlineSet: new Set(),
+    lastError: null,
+    pollInFlight: false,
+  };
+
+  const config = Object.assign(
+    {
+      pollIntervalMs: 120000,
+      retentionMs: 30 * 60 * 1000,
+      onlineUrl: "/online.html",
+      characterUrlTemplate: "/character.html?name={name}",
+      enabled: false,
+    },
+    bot.storage.get(configStorageKey, {})
+  );
+
+  let trackedNames = normalizeTrackedNames(bot.storage.get(trackedStorageKey, []));
+  let recentDeaths = normalizeDeathRecords(bot.storage.get(deathsStorageKey, []));
+  let seenDeathKeys = new Set(bot.storage.get(seenDeathsStorageKey, []) || []);
+
+  function normalizeName(value) {
+    return String(value || "").trim();
+  }
+
+  function normalizeKey(value) {
+    return normalizeName(value).toLowerCase();
+  }
+
+  function normalizeTrackedNames(value) {
+    const list = Array.isArray(value) ? value : [];
+    const dedup = new Map();
+    list.forEach((entry) => {
+      const name = normalizeName(entry);
+      const key = normalizeKey(name);
+      if (key) dedup.set(key, name);
+    });
+    return Array.from(dedup.values());
+  }
+
+  function normalizeDeathRecords(value) {
+    if (!Array.isArray(value)) return [];
+    return value
+      .map((entry) => {
+        if (!entry) return null;
+        const name = normalizeName(entry.name);
+        const at = Number(entry.at);
+        if (!name || !Number.isFinite(at)) return null;
+        return {
+          name,
+          at,
+          level: entry.level ?? null,
+          description: String(entry.description || ""),
+          dedupKey: String(entry.dedupKey || ""),
+        };
+      })
+      .filter(Boolean);
+  }
+
+  function persistConfig() {
+    bot.storage.set(configStorageKey, { ...config });
+  }
+  function persistTracked() {
+    bot.storage.set(trackedStorageKey, trackedNames);
+  }
+  function persistDeaths() {
+    bot.storage.set(deathsStorageKey, recentDeaths);
+  }
+  function persistSeenDeathKeys() {
+    bot.storage.set(seenDeathsStorageKey, Array.from(seenDeathKeys));
+  }
+
+  function expireOldDeaths(now = Date.now()) {
+    const cutoff = now - Math.max(60000, Number(config.retentionMs) || 1800000);
+    const next = recentDeaths.filter((entry) => entry.at >= cutoff);
+    if (next.length !== recentDeaths.length) {
+      recentDeaths = next;
+      persistDeaths();
+      const keep = new Set(next.map((d) => d.dedupKey).filter(Boolean));
+      const newSeen = new Set();
+      seenDeathKeys.forEach((key) => {
+        if (keep.has(key)) newSeen.add(key);
+      });
+      if (newSeen.size !== seenDeathKeys.size) {
+        seenDeathKeys = newSeen;
+        persistSeenDeathKeys();
+      }
+      try { bot.ui?.refreshTrackerStatus?.(); } catch (error) {}
+    }
+  }
+
+  function buildCharacterUrl(name) {
+    const template = String(config.characterUrlTemplate || "/character.html?name={name}");
+    return template.replace("{name}", encodeURIComponent(name));
+  }
+
+  async function fetchHtml(url) {
+    const response = await fetch(url, {
+      credentials: "include",
+      headers: { "Accept": "text/html" },
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status} fetching ${url}`);
+    }
+    return response.text();
+  }
+
+  function parseHtml(html) {
+    try {
+      const parser = new DOMParser();
+      return parser.parseFromString(html, "text/html");
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function extractOnlineNames(doc) {
+    if (!doc) return new Set();
+    const names = new Set();
+    const anchors = doc.querySelectorAll('a[href*="character.html"]');
+    anchors.forEach((anchor) => {
+      const href = anchor.getAttribute("href") || "";
+      const match = href.match(/[?&]name=([^&#]+)/i);
+      const name = match
+        ? decodeURIComponent(match[1].replace(/\+/g, " ")).trim()
+        : (anchor.textContent || "").trim();
+      if (name) names.add(name);
+    });
+    return names;
+  }
+
+  function parseDeathDate(raw) {
+    if (!raw) return null;
+    const direct = Date.parse(raw);
+    if (Number.isFinite(direct)) return direct;
+    const isoLike = String(raw).trim().replace(/(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}(:\d{2})?)/, "$1T$2");
+    const second = Date.parse(isoLike);
+    if (Number.isFinite(second)) return second;
+    const monthMatch = String(raw).match(/(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})[ ,]+(\d{1,2}):(\d{2})/);
+    if (monthMatch) {
+      const probe = Date.parse(`${monthMatch[2]} ${monthMatch[1]} ${monthMatch[3]} ${monthMatch[4]}:${monthMatch[5]}`);
+      if (Number.isFinite(probe)) return probe;
+    }
+    return null;
+  }
+
+  function extractCharacterDeaths(doc, name) {
+    if (!doc) return [];
+    const lowerName = name.toLowerCase();
+    const deaths = [];
+
+    const rows = doc.querySelectorAll("tr, li, .death, .death-entry, [data-death]");
+    rows.forEach((row) => {
+      const text = (row.textContent || "").replace(/\s+/g, " ").trim();
+      if (!text) return;
+
+      if (!/(died|killed by|slain|death)/i.test(text)) {
+        if (!/\b\d{4}-\d{2}-\d{2}\b/.test(text) && !/\b\d{1,2}\s+\w+\s+\d{4}\b/.test(text)) {
+          return;
+        }
+      }
+
+      let at = null;
+      const cells = row.querySelectorAll("td, span, time, .death-date, [data-date]");
+      cells.forEach((cell) => {
+        if (at != null) return;
+        const candidate = cell.getAttribute?.("datetime") || cell.getAttribute?.("data-date") || cell.textContent;
+        const parsed = parseDeathDate(candidate);
+        if (parsed != null) at = parsed;
+      });
+      if (at == null) {
+        const dateGuess = text.match(/(\d{4}-\d{2}-\d{2}[ T]\d{1,2}:\d{2}(?::\d{2})?)|(\d{1,2}\s+[A-Za-z]+\s+\d{4}[,\s]+\d{1,2}:\d{2})/);
+        if (dateGuess) at = parseDeathDate(dateGuess[0]);
+      }
+      if (at == null) return;
+
+      const levelMatch = text.match(/(?:level|lvl)\s*[:\-]?\s*(\d+)/i);
+      const level = levelMatch ? Number(levelMatch[1]) : null;
+
+      let description = text;
+      const colonIndex = text.indexOf(",");
+      if (colonIndex > 0 && colonIndex < 60) description = text.slice(colonIndex + 1).trim();
+      if (description.length > 240) description = description.slice(0, 240) + "…";
+
+      const dedupKey = `${lowerName}|${at}|${description.slice(0, 60).toLowerCase()}`;
+      deaths.push({ name, at, level, description, dedupKey });
+    });
+
+    const dedup = new Map();
+    deaths.forEach((entry) => {
+      if (!dedup.has(entry.dedupKey)) dedup.set(entry.dedupKey, entry);
+    });
+    return Array.from(dedup.values()).sort((a, b) => a.at - b.at);
+  }
+
+  async function pollOnce(now = Date.now()) {
+    if (state.pollInFlight) return false;
+    state.pollInFlight = true;
+
+    try {
+      const onlineHtml = await fetchHtml(config.onlineUrl);
+      const onlineDoc = parseHtml(onlineHtml);
+      const onlineNames = extractOnlineNames(onlineDoc);
+
+      const onlineKeys = new Set();
+      onlineNames.forEach((n) => onlineKeys.add(normalizeKey(n)));
+      state.lastOnlineSet = onlineKeys;
+
+      const cutoff = now - Math.max(60000, Number(config.retentionMs) || 1800000);
+      let appended = 0;
+
+      for (const trackedName of trackedNames) {
+        const key = normalizeKey(trackedName);
+        if (!onlineKeys.has(key)) continue;
+
+        try {
+          const charHtml = await fetchHtml(buildCharacterUrl(trackedName));
+          const charDoc = parseHtml(charHtml);
+          const deaths = extractCharacterDeaths(charDoc, trackedName);
+          for (const death of deaths) {
+            if (death.at < cutoff) continue;
+            if (seenDeathKeys.has(death.dedupKey)) continue;
+            seenDeathKeys.add(death.dedupKey);
+            recentDeaths.push(death);
+            appended += 1;
+            bot.log("tracker: new death observed", {
+              name: death.name,
+              at: new Date(death.at).toISOString(),
+              level: death.level,
+              description: death.description.slice(0, 80),
+            });
+          }
+        } catch (error) {
+          bot.log("tracker: character fetch failed", {
+            name: trackedName,
+            error: error?.message || String(error),
+          });
+        }
+      }
+
+      if (appended > 0) {
+        recentDeaths.sort((a, b) => a.at - b.at);
+        persistDeaths();
+        persistSeenDeathKeys();
+      }
+
+      state.lastPollAt = now;
+      state.lastError = null;
+      expireOldDeaths(now);
+      try { bot.ui?.refreshTrackerStatus?.(); } catch (error) {}
+      return true;
+    } catch (error) {
+      state.lastError = error?.message || String(error);
+      bot.log("tracker: poll failed", { error: state.lastError });
+      try { bot.ui?.refreshTrackerStatus?.(); } catch (error2) {}
+      return false;
+    } finally {
+      state.pollInFlight = false;
+    }
+  }
+
+  function schedulePoll() {
+    stopPollTimer();
+    if (!state.running) return;
+    const interval = Math.max(30000, Math.min(600000, Number(config.pollIntervalMs) || 120000));
+    state.pollTimerId = window.setInterval(() => {
+      pollOnce().catch((error) => {
+        bot.log("tracker: poll exception", error?.message || error);
+      });
+    }, interval);
+  }
+
+  function stopPollTimer() {
+    if (state.pollTimerId != null) {
+      window.clearInterval(state.pollTimerId);
+      state.pollTimerId = null;
+    }
+  }
+
+  function startExpireTimer() {
+    if (state.expireTimerId != null) return;
+    state.expireTimerId = window.setInterval(() => expireOldDeaths(), 30000);
+  }
+
+  function stopExpireTimer() {
+    if (state.expireTimerId != null) {
+      window.clearInterval(state.expireTimerId);
+      state.expireTimerId = null;
+    }
+  }
+
+  function start(overrides = {}) {
+    Object.assign(config, overrides);
+    config.enabled = true;
+    persistConfig();
+    if (state.running) {
+      bot.log("tracker already running");
+      return false;
+    }
+    state.running = true;
+    schedulePoll();
+    startExpireTimer();
+    pollOnce().catch(() => {});
+    bot.log("tracker started", {
+      pollIntervalMs: config.pollIntervalMs,
+      retentionMs: config.retentionMs,
+      tracked: trackedNames.length,
+    });
+    return true;
+  }
+
+  function stop(options = {}) {
+    const persistEnabled = options.persistEnabled !== false;
+    state.running = false;
+    stopPollTimer();
+    stopExpireTimer();
+    if (persistEnabled) {
+      config.enabled = false;
+      persistConfig();
+    }
+    bot.log("tracker stopped");
+    return true;
+  }
+
+  function addTracked(name) {
+    const normalized = normalizeName(name);
+    if (!normalized) return null;
+    const key = normalizeKey(normalized);
+    if (trackedNames.some((n) => normalizeKey(n) === key)) return null;
+    trackedNames.push(normalized);
+    persistTracked();
+    bot.log("tracker: added", { name: normalized });
+    if (state.running) pollOnce().catch(() => {});
+    try { bot.ui?.refreshTrackerStatus?.(); } catch (error) {}
+    return normalized;
+  }
+
+  function removeTracked(name) {
+    const key = normalizeKey(name);
+    const before = trackedNames.length;
+    trackedNames = trackedNames.filter((n) => normalizeKey(n) !== key);
+    if (before === trackedNames.length) return false;
+    persistTracked();
+    bot.log("tracker: removed", { name });
+    try { bot.ui?.refreshTrackerStatus?.(); } catch (error) {}
+    return true;
+  }
+
+  function getTrackedNames() {
+    return trackedNames.slice();
+  }
+
+  function isOnline(name) {
+    return state.lastOnlineSet.has(normalizeKey(name));
+  }
+
+  function getRecentDeaths(now = Date.now()) {
+    expireOldDeaths(now);
+    return recentDeaths.slice().sort((a, b) => b.at - a.at);
+  }
+
+  function status() {
+    return {
+      running: state.running,
+      config: { ...config },
+      tracked: trackedNames.slice(),
+      online: trackedNames.filter((n) => isOnline(n)),
+      offline: trackedNames.filter((n) => !isOnline(n)),
+      recentDeaths: getRecentDeaths(),
+      lastPollAt: state.lastPollAt,
+      lastError: state.lastError,
+      pollInFlight: state.pollInFlight,
+      onlineCount: state.lastOnlineSet.size,
+    };
+  }
+
+  function updateConfig(nextConfig = {}) {
+    Object.assign(config, nextConfig);
+    persistConfig();
+    if (state.running) schedulePoll();
+    bot.log("tracker config updated", { ...config });
+    return { ...config };
+  }
+
+  async function debugFetch(name) {
+    const url = name ? buildCharacterUrl(name) : config.onlineUrl;
+    try {
+      const html = await fetchHtml(url);
+      const doc = parseHtml(html);
+      const meta = {
+        url,
+        htmlLength: html.length,
+        documentTitle: doc?.title || null,
+        sample: html.slice(0, 800),
+      };
+      if (!name) {
+        const names = Array.from(extractOnlineNames(doc));
+        return { ...meta, onlineSample: names.slice(0, 20), onlineCount: names.length };
+      }
+      return { ...meta, deaths: extractCharacterDeaths(doc, name) };
+    } catch (error) {
+      return { url, error: error?.message || String(error) };
+    }
+  }
+
+  function clearDeaths() {
+    recentDeaths = [];
+    seenDeathKeys.clear();
+    persistDeaths();
+    persistSeenDeathKeys();
+    try { bot.ui?.refreshTrackerStatus?.(); } catch (error) {}
+    return true;
+  }
+
+  bot.addCleanup(() => {
+    stopPollTimer();
+    stopExpireTimer();
+  });
+
+  if (config.enabled) start();
+
+  bot.tracker = {
+    start,
+    stop,
+    status,
+    updateConfig,
+    addTracked,
+    removeTracked,
+    getTrackedNames,
+    isOnline,
+    getRecentDeaths,
+    pollOnce: () => pollOnce(),
+    debugFetch,
+    clearDeaths,
+    config,
+  };
+};
+window.__minibiaCopilotBundle = window.__minibiaCopilotBundle || {};
+
 window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
   const panelPositionKey = "minibiaCopilot.ui.panelPosition";
   const panelCollapsedKey = "minibiaCopilot.ui.panelCollapsed";
@@ -8540,6 +8990,95 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
       } else {
         const top3 = loot.slice(0, 3).map((l) => `${l.name} ${formatNumber(l.count)}`).join(", ");
         topLoot.textContent = `Top loot: ${top3}`;
+      }
+    }
+  }
+
+  function escapeHtml(value) {
+    return String(value || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function formatRelativeTime(ms) {
+    const diff = Math.max(0, Date.now() - ms);
+    if (diff < 60000) return Math.round(diff / 1000) + "s ago";
+    if (diff < 3600000) return Math.round(diff / 60000) + "m ago";
+    return Math.round(diff / 3600000) + "h ago";
+  }
+
+  function refreshTrackerStatus() {
+    const status = bot.tracker?.status?.();
+    if (!status) return;
+
+    const enabledInput = document.getElementById("minibia-copilot-tracker-enabled");
+    const intervalInput = document.getElementById("minibia-copilot-tracker-interval");
+    const statusLabel = document.getElementById("minibia-copilot-tracker-status");
+    const list = document.getElementById("minibia-copilot-tracker-list");
+    const deathsList = document.getElementById("minibia-copilot-tracker-deaths");
+
+    if (enabledInput && document.activeElement !== enabledInput) {
+      enabledInput.checked = !!status.running;
+    }
+    if (intervalInput && document.activeElement !== intervalInput) {
+      intervalInput.value = String(Math.round((Number(status.config?.pollIntervalMs) || 120000) / 1000));
+    }
+    if (statusLabel) {
+      if (status.lastError) {
+        statusLabel.textContent = "Status: error — " + String(status.lastError).slice(0, 80);
+      } else if (status.pollInFlight) {
+        statusLabel.textContent = "Status: fetching…";
+      } else if (status.running) {
+        const seen = status.onlineCount ? `${status.onlineCount} online site-wide` : "no online data yet";
+        const lastAt = status.lastPollAt ? formatRelativeTime(status.lastPollAt) : "never";
+        statusLabel.textContent = `Status: running (${seen}, last ${lastAt})`;
+      } else {
+        statusLabel.textContent = "Status: idle";
+      }
+    }
+
+    if (list) {
+      if (!status.tracked.length) {
+        list.innerHTML = '<div class="mc-small-note">No tracked players yet. Add a name above.</div>';
+      } else {
+        list.innerHTML = status.tracked.map((name) => {
+          const online = status.online.includes(name);
+          return (
+            `<div class="mc-tracked-row" data-name="${escapeHtml(name)}">` +
+              `<span class="mc-tracked-name">` +
+                `<span class="mc-tracked-dot" data-online="${online ? "true" : "false"}"></span>` +
+                `<span>${escapeHtml(name)}</span>` +
+              `</span>` +
+              `<button type="button" class="mc-small-button" data-tracker-remove="${escapeHtml(name)}">✕</button>` +
+            `</div>`
+          );
+        }).join("");
+      }
+    }
+
+    if (deathsList) {
+      const deaths = status.recentDeaths || [];
+      if (!deaths.length) {
+        deathsList.innerHTML = '<div class="mc-death-row-empty">No deaths recorded in the last 30 minutes.</div>';
+      } else {
+        deathsList.innerHTML = deaths.map((death) => {
+          const when = new Date(death.at);
+          const time = when.toTimeString().slice(0, 5);
+          const rel = formatRelativeTime(death.at);
+          const levelTag = death.level != null ? ` (lvl ${escapeHtml(death.level)})` : "";
+          return (
+            `<div class="mc-death-row">` +
+              `<div class="mc-death-head">` +
+                `<span>${escapeHtml(death.name)}${levelTag}</span>` +
+                `<span>${escapeHtml(time)} · ${escapeHtml(rel)}</span>` +
+              `</div>` +
+              `<div class="mc-death-body">${escapeHtml(death.description || "")}</div>` +
+            `</div>`
+          );
+        }).join("");
       }
     }
   }
@@ -9049,6 +9588,65 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
         font-size: 12px;
       }
 
+      #minibia-copilot-panel .mc-tracked-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 5px 8px;
+        border-radius: 6px;
+        background: rgba(0, 0, 0, 0.22);
+        border: 1px solid rgba(224, 200, 148, 0.1);
+      }
+
+      #minibia-copilot-panel .mc-tracked-name {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        color: #f7eccf;
+      }
+
+      #minibia-copilot-panel .mc-tracked-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        background: #6b6b6b;
+      }
+
+      #minibia-copilot-panel .mc-tracked-dot[data-online="true"] {
+        background: #65d96b;
+        box-shadow: 0 0 6px rgba(120, 220, 130, 0.6);
+      }
+
+      #minibia-copilot-panel .mc-death-row {
+        padding: 6px 8px;
+        border-radius: 6px;
+        background: rgba(120, 30, 30, 0.18);
+        border: 1px solid rgba(255, 100, 100, 0.18);
+      }
+
+      #minibia-copilot-panel .mc-death-row-empty {
+        padding: 8px;
+        color: #8c7a52;
+        text-align: center;
+        font-style: italic;
+      }
+
+      #minibia-copilot-panel .mc-death-row .mc-death-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        font-weight: 700;
+        color: #ffb0a8;
+      }
+
+      #minibia-copilot-panel .mc-death-row .mc-death-body {
+        margin-top: 2px;
+        color: #d3c49d;
+        font-size: 11px;
+        line-height: 1.3;
+      }
+
       #minibia-copilot-panel .mc-actions {
         display: grid;
         gap: 6px;
@@ -9274,6 +9872,7 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
         <button type="button" class="mc-tab-button" data-tab="survival"><span class="mc-tab-icon">❤</span><span>Survival</span></button>
         <button type="button" class="mc-tab-button" data-tab="navigation"><span class="mc-tab-icon">🗺</span><span>Navigate</span></button>
         <button type="button" class="mc-tab-button" data-tab="utility"><span class="mc-tab-icon">⚙</span><span>Utility</span></button>
+        <button type="button" class="mc-tab-button" data-tab="deaths"><span class="mc-tab-icon">☠</span><span>Deaths</span></button>
       </div>
       <div class="mc-body">
 
@@ -9645,6 +10244,45 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
           </div>
         </div>
 
+        <div class="mc-tab-pane" data-tab="deaths" hidden>
+          <div class="mc-section">
+            <div class="mc-label">Tracker</div>
+            <div class="mc-stack">
+              <label class="mc-toggle">
+                <input type="checkbox" id="minibia-copilot-tracker-enabled" />
+                <span>Poll minibia.com</span>
+              </label>
+              <label class="mc-field" for="minibia-copilot-tracker-interval">
+                <span class="mc-field-label">Poll interval (sec)</span>
+                <input type="number" id="minibia-copilot-tracker-interval" min="30" max="600" placeholder="120" />
+              </label>
+              <div class="mc-small-note" id="minibia-copilot-tracker-status">Status: idle</div>
+            </div>
+          </div>
+
+          <div class="mc-section">
+            <div class="mc-label">Tracked Players</div>
+            <div class="mc-stack">
+              <div class="mc-inline">
+                <input type="text" id="minibia-copilot-tracker-add-input" placeholder="Character name" />
+                <button type="button" class="mc-small-button" id="minibia-copilot-tracker-add">Add</button>
+              </div>
+              <div class="mc-list" id="minibia-copilot-tracker-list"></div>
+            </div>
+          </div>
+
+          <div class="mc-section">
+            <div class="mc-label">Recent Deaths (last 30 min)</div>
+            <div class="mc-stack">
+              <div class="mc-list" id="minibia-copilot-tracker-deaths"></div>
+              <div class="mc-actions mc-actions-inline-two">
+                <button type="button" class="mc-small-button" id="minibia-copilot-tracker-refresh">Refresh Now</button>
+                <button type="button" class="mc-small-button" id="minibia-copilot-tracker-clear">Clear Deaths</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
       </div>
     `;
     document.body.appendChild(panel);
@@ -9680,6 +10318,13 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
     const equipAmuletTypeSelect = panel.querySelector("#minibia-copilot-equip-amulet-type");
     const equipAmuletCustomInput = panel.querySelector("#minibia-copilot-equip-amulet-custom");
     const equipAmuletAutoSwapInput = panel.querySelector("#minibia-copilot-equip-amulet-autoswap");
+    const trackerEnabledInput = panel.querySelector("#minibia-copilot-tracker-enabled");
+    const trackerIntervalInput = panel.querySelector("#minibia-copilot-tracker-interval");
+    const trackerAddInput = panel.querySelector("#minibia-copilot-tracker-add-input");
+    const trackerAddButton = panel.querySelector("#minibia-copilot-tracker-add");
+    const trackerList = panel.querySelector("#minibia-copilot-tracker-list");
+    const trackerRefreshButton = panel.querySelector("#minibia-copilot-tracker-refresh");
+    const trackerClearButton = panel.querySelector("#minibia-copilot-tracker-clear");
     const autoHealEnabledInput = panel.querySelector("#minibia-copilot-auto-heal-enabled");
     const autoHealMinHpInput = panel.querySelector("#minibia-copilot-auto-heal-min-hp");
     const autoHealHpHotkeyInput = panel.querySelector("#minibia-copilot-auto-heal-hp-hotkey");
@@ -9982,6 +10627,71 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
       equipAmuletAutoSwapInput.checked = !!bot.equipAmulet?.config?.autoSwap;
       equipAmuletAutoSwapInput.addEventListener("change", () => {
         bot.equipAmulet?.updateConfig?.({ autoSwap: equipAmuletAutoSwapInput.checked });
+      });
+    }
+
+    if (trackerEnabledInput) {
+      trackerEnabledInput.addEventListener("change", () => {
+        if (trackerEnabledInput.checked) {
+          bot.tracker?.start?.();
+        } else {
+          bot.tracker?.stop?.();
+        }
+        refreshTrackerStatus();
+      });
+    }
+
+    if (trackerIntervalInput) {
+      trackerIntervalInput.addEventListener("change", () => {
+        const seconds = Math.max(30, Math.min(600, Number(trackerIntervalInput.value) || 120));
+        trackerIntervalInput.value = String(seconds);
+        bot.tracker?.updateConfig?.({ pollIntervalMs: seconds * 1000 });
+        refreshTrackerStatus();
+      });
+    }
+
+    function addTrackedFromInput() {
+      const name = trackerAddInput?.value?.trim() || "";
+      if (!name) return;
+      bot.tracker?.addTracked?.(name);
+      if (trackerAddInput) trackerAddInput.value = "";
+      refreshTrackerStatus();
+    }
+
+    if (trackerAddButton) {
+      trackerAddButton.addEventListener("click", addTrackedFromInput);
+    }
+    if (trackerAddInput) {
+      trackerAddInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          addTrackedFromInput();
+        }
+      });
+    }
+
+    if (trackerList) {
+      trackerList.addEventListener("click", (event) => {
+        const target = event.target.closest("[data-tracker-remove]");
+        if (!target) return;
+        const name = target.getAttribute("data-tracker-remove");
+        if (!name) return;
+        bot.tracker?.removeTracked?.(name);
+        refreshTrackerStatus();
+      });
+    }
+
+    if (trackerRefreshButton) {
+      trackerRefreshButton.addEventListener("click", () => {
+        bot.tracker?.pollOnce?.();
+        window.setTimeout(refreshTrackerStatus, 500);
+      });
+    }
+
+    if (trackerClearButton) {
+      trackerClearButton.addEventListener("click", () => {
+        bot.tracker?.clearDeaths?.();
+        refreshTrackerStatus();
       });
     }
 
@@ -10426,6 +11136,7 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
     refreshTalkStatus();
     refreshMagicWallStatus();
     refreshHuntStatus();
+    refreshTrackerStatus();
     refreshVisibleCreatures();
     refreshCavePresetControls();
     refreshCaveClosestStatus();
@@ -10464,6 +11175,11 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
     bot.addCleanup(() => {
       window.clearInterval(snapshotTimerId);
     });
+
+    const trackerTimerId = window.setInterval(refreshTrackerStatus, 5000);
+    bot.addCleanup(() => {
+      window.clearInterval(trackerTimerId);
+    });
   }
 
   bot.ui = {
@@ -10484,6 +11200,7 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
     refreshTalkStatus,
     refreshMagicWallStatus,
     refreshHuntStatus,
+    refreshTrackerStatus,
     refreshVisibleCreatures,
     refreshCaveClosestStatus,
     refreshCaveTransitionStatus,
@@ -10538,6 +11255,7 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
     ["talk", "minibiaCopilot.talk.config"],
     ["magicWall", "minibiaCopilot.magicWall.config"],
     ["hunt", "minibiaCopilot.hunt.config"],
+    ["tracker", "minibiaCopilot.tracker.config"],
   ];
 
   function getPersistedEnabledSnapshot(bot) {
@@ -10605,6 +11323,7 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
     currentBundle.installTalkModule(bot);
     currentBundle.installMagicWallModule(bot);
     currentBundle.installHuntModule(bot);
+    currentBundle.installTrackerModule(bot);
     currentBundle.installPanel(bot);
 
     bot.ui.inject();
@@ -10631,6 +11350,7 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
       talk: bot.talk.status(),
       magicWall: bot.magicWall.status(),
       hunt: bot.hunt.status(),
+      tracker: bot.tracker.status(),
     });
 
     window.minibiaCopilot = bot;
@@ -10639,7 +11359,7 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
 
     console.log("[minibia-copilot] ready", {
       version: bot.version,
-      modules: ["pz", "xray", "panic", "rune", "heal", "invisible", "magicShield", "attack", "cave", "equipRing", "equipAmulet", "eat", "talk", "magicWall", "hunt", "ui"],
+      modules: ["pz", "xray", "panic", "rune", "heal", "invisible", "magicShield", "attack", "cave", "equipRing", "equipAmulet", "eat", "talk", "magicWall", "hunt", "tracker", "ui"],
     });
     console.log("minibiaCopilot.reload()");
     console.log("minibiaCopilot.xray.status()");

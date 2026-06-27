@@ -41,6 +41,7 @@
     ["talk", "minibiaCopilot.talk.config"],
     ["magicWall", "minibiaCopilot.magicWall.config"],
     ["hunt", "minibiaCopilot.hunt.config"],
+    ["tracker", "minibiaCopilot.tracker.config"],
   ];
 
   function getPersistedEnabledSnapshot(bot) {
@@ -108,6 +109,7 @@
     currentBundle.installTalkModule(bot);
     currentBundle.installMagicWallModule(bot);
     currentBundle.installHuntModule(bot);
+    currentBundle.installTrackerModule(bot);
     currentBundle.installPanel(bot);
 
     bot.ui.inject();
@@ -134,6 +136,7 @@
       talk: bot.talk.status(),
       magicWall: bot.magicWall.status(),
       hunt: bot.hunt.status(),
+      tracker: bot.tracker.status(),
     });
 
     window.minibiaCopilot = bot;
@@ -142,7 +145,7 @@
 
     console.log("[minibia-copilot] ready", {
       version: bot.version,
-      modules: ["pz", "xray", "panic", "rune", "heal", "invisible", "magicShield", "attack", "cave", "equipRing", "equipAmulet", "eat", "talk", "magicWall", "hunt", "ui"],
+      modules: ["pz", "xray", "panic", "rune", "heal", "invisible", "magicShield", "attack", "cave", "equipRing", "equipAmulet", "eat", "talk", "magicWall", "hunt", "tracker", "ui"],
     });
     console.log("minibiaCopilot.reload()");
     console.log("minibiaCopilot.xray.status()");

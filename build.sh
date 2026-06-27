@@ -18,6 +18,7 @@ cat \
   src/modules/talk.js \
   src/modules/magic-wall.js \
   src/modules/hunt.js \
+  src/modules/tracker.js \
   src/ui/panel.js \
   src/main.js \
   > minibia-copilot.js
