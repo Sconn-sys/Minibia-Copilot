@@ -597,6 +597,63 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
     }
   }
 
+  function ensureTrackerToastContainer() {
+    let host = document.getElementById("minibia-copilot-tracker-toasts");
+    if (host) {
+      positionTrackerToastContainer(host);
+      return host;
+    }
+    host = document.createElement("div");
+    host.id = "minibia-copilot-tracker-toasts";
+    document.body.appendChild(host);
+    positionTrackerToastContainer(host);
+    bot.addCleanup(() => host?.remove());
+    return host;
+  }
+
+  function positionTrackerToastContainer(host) {
+    const canvas = window.gameClient?.renderer?.screen?.canvas;
+    const rect = canvas?.getBoundingClientRect?.();
+    if (rect && rect.width > 0 && rect.height > 0) {
+      host.style.left = `${Math.round(rect.left + rect.width / 2)}px`;
+      host.style.top = `${Math.round(rect.top + 8)}px`;
+      host.style.transform = "translateX(-50%)";
+      host.style.right = "auto";
+    } else {
+      host.style.left = "50%";
+      host.style.top = "16px";
+      host.style.transform = "translateX(-50%)";
+      host.style.right = "auto";
+    }
+  }
+
+  function showTrackerNotification(type, name, info) {
+    const host = ensureTrackerToastContainer();
+    const tone = type === "death" ? "death" : "login";
+    const node = document.createElement("div");
+    node.className = "mc-toast";
+    node.dataset.tone = tone;
+
+    if (tone === "death") {
+      const cause = info?.description ? escapeHtml(info.description) : "an unknown cause";
+      const levelTag = info?.level != null ? ` (lvl ${escapeHtml(info.level)})` : "";
+      node.innerHTML =
+        `<div><span class="mc-toast-name">${escapeHtml(name)}${levelTag}</span> has died by ${cause}</div>`;
+    } else {
+      node.innerHTML =
+        `<div><span class="mc-toast-name">${escapeHtml(name)}</span> has Logged in</div>`;
+    }
+
+    host.appendChild(node);
+    positionTrackerToastContainer(host);
+
+    const ttl = tone === "death" ? 12000 : 8000;
+    window.setTimeout(() => {
+      node.classList.add("mc-toast-leaving");
+      window.setTimeout(() => node.remove(), 240);
+    }, ttl);
+  }
+
   function refreshMagicWallStatus() {
     const enabledInput = document.getElementById("minibia-copilot-magic-wall-enabled");
     const audioInput = document.getElementById("minibia-copilot-magic-wall-audio");
@@ -1171,6 +1228,60 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
         color: #d3c49d;
         font-size: 11px;
         line-height: 1.3;
+      }
+
+      #minibia-copilot-tracker-toasts {
+        position: fixed;
+        z-index: 2147483645;
+        pointer-events: none;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 6px;
+        font: 13px/1.35 Verdana, sans-serif;
+      }
+
+      #minibia-copilot-tracker-toasts .mc-toast {
+        pointer-events: auto;
+        max-width: 480px;
+        padding: 8px 14px;
+        border-radius: 8px;
+        border: 1px solid currentColor;
+        background: rgba(12, 10, 6, 0.92);
+        box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+        color: #f7eccf;
+        animation: mc-toast-in 220ms ease-out;
+      }
+
+      #minibia-copilot-tracker-toasts .mc-toast[data-tone="login"] {
+        color: #65d96b;
+        background: linear-gradient(180deg, rgba(20, 50, 22, 0.95), rgba(12, 10, 6, 0.95));
+      }
+
+      #minibia-copilot-tracker-toasts .mc-toast[data-tone="death"] {
+        color: #ff7d6f;
+        background: linear-gradient(180deg, rgba(70, 16, 16, 0.95), rgba(12, 10, 6, 0.95));
+      }
+
+      #minibia-copilot-tracker-toasts .mc-toast .mc-toast-name {
+        font-weight: 700;
+      }
+
+      #minibia-copilot-tracker-toasts .mc-toast .mc-toast-body {
+        color: #d3c49d;
+        font-size: 12px;
+      }
+
+      #minibia-copilot-tracker-toasts .mc-toast-leaving {
+        animation: mc-toast-out 240ms ease-in forwards;
+      }
+
+      @keyframes mc-toast-in {
+        from { opacity: 0; transform: translateY(-8px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+      @keyframes mc-toast-out {
+        to { opacity: 0; transform: translateY(-8px); }
       }
 
       #minibia-copilot-panel .mc-actions {
@@ -2706,6 +2817,18 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
     bot.addCleanup(() => {
       window.clearInterval(trackerTimerId);
     });
+
+    ensureTrackerToastContainer();
+    const repositionToasts = () => {
+      const host = document.getElementById("minibia-copilot-tracker-toasts");
+      if (host) positionTrackerToastContainer(host);
+    };
+    window.addEventListener("resize", repositionToasts);
+    const toastRepositionTimerId = window.setInterval(repositionToasts, 2000);
+    bot.addCleanup(() => {
+      window.removeEventListener("resize", repositionToasts);
+      window.clearInterval(toastRepositionTimerId);
+    });
   }
 
   bot.ui = {
@@ -2727,6 +2850,7 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
     refreshMagicWallStatus,
     refreshHuntStatus,
     refreshTrackerStatus,
+    showTrackerNotification,
     refreshVisibleCreatures,
     refreshCaveClosestStatus,
     refreshCaveTransitionStatus,

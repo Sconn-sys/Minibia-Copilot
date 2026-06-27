@@ -363,6 +363,9 @@ window.__minibiaCopilotBundle.installTrackerModule = function installTrackerModu
     if (state.pollInFlight) return false;
     state.pollInFlight = true;
 
+    const previousOnlineKeys = state.lastOnlineSet;
+    const isFirstPoll = previousOnlineKeys.size === 0 && !state.lastPollAt;
+
     try {
       const onlineResult = await fetchAny(config.onlineUrl);
       const onlineNames = extractOnlineNames(onlineResult);
@@ -371,13 +374,23 @@ window.__minibiaCopilotBundle.installTrackerModule = function installTrackerModu
       onlineNames.forEach((n) => onlineKeys.add(normalizeKey(n)));
       state.lastOnlineSet = onlineKeys;
 
+      if (!isFirstPoll) {
+        for (const trackedName of trackedNames) {
+          const key = normalizeKey(trackedName);
+          const wasOnline = previousOnlineKeys.has(key);
+          const isOnlineNow = onlineKeys.has(key);
+          if (!wasOnline && isOnlineNow) {
+            try { bot.ui?.showTrackerNotification?.("login", trackedName); } catch (error) {}
+            bot.log("tracker: login observed", { name: trackedName });
+          }
+        }
+      }
+
       const cutoff = now - Math.max(60000, Number(config.retentionMs) || 1800000);
       let appended = 0;
+      const newDeathsForNotifications = [];
 
       for (const trackedName of trackedNames) {
-        const key = normalizeKey(trackedName);
-        if (!onlineKeys.has(key)) continue;
-
         const deaths = await fetchCharacterDeaths(trackedName);
         for (const death of deaths) {
           if (death.at < cutoff) continue;
@@ -385,6 +398,7 @@ window.__minibiaCopilotBundle.installTrackerModule = function installTrackerModu
           seenDeathKeys.add(death.dedupKey);
           recentDeaths.push(death);
           appended += 1;
+          if (!isFirstPoll) newDeathsForNotifications.push(death);
           bot.log("tracker: new death observed", {
             name: death.name,
             at: new Date(death.at).toISOString(),
@@ -399,6 +413,10 @@ window.__minibiaCopilotBundle.installTrackerModule = function installTrackerModu
         persistDeaths();
         persistSeenDeathKeys();
       }
+
+      newDeathsForNotifications.forEach((death) => {
+        try { bot.ui?.showTrackerNotification?.("death", death.name, death); } catch (error) {}
+      });
 
       state.lastPollAt = now;
       state.lastError = null;
