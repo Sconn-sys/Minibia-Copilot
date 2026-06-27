@@ -8056,12 +8056,23 @@ window.__minibiaCopilotBundle.installTrackerModule = function installTrackerModu
     {
       pollIntervalMs: 120000,
       retentionMs: 30 * 60 * 1000,
-      onlineUrl: "/online.html",
-      characterUrlTemplate: "/character.html?name={name}",
+      onlineUrl: "/api/online",
+      characterApiUrlTemplate: "/api/character?name={name}",
+      characterPageUrlTemplate: "/character.html?name={name}",
       enabled: false,
     },
     bot.storage.get(configStorageKey, {})
   );
+
+  if (config.onlineUrl === "/online.html") {
+    config.onlineUrl = "/api/online";
+  }
+  if (!config.characterApiUrlTemplate) {
+    config.characterApiUrlTemplate = "/api/character?name={name}";
+  }
+  if (!config.characterPageUrlTemplate) {
+    config.characterPageUrlTemplate = "/character.html?name={name}";
+  }
 
   let trackedNames = normalizeTrackedNames(bot.storage.get(trackedStorageKey, []));
   let recentDeaths = normalizeDeathRecords(bot.storage.get(deathsStorageKey, []));
@@ -8137,21 +8148,35 @@ window.__minibiaCopilotBundle.installTrackerModule = function installTrackerModu
     }
   }
 
-  function buildCharacterUrl(name) {
-    const template = String(config.characterUrlTemplate || "/character.html?name={name}");
+  function buildCharacterApiUrl(name) {
+    const template = String(config.characterApiUrlTemplate || "/api/character?name={name}");
     return template.replace("{name}", encodeURIComponent(name));
   }
 
-  async function fetchHtml(url) {
+  function buildCharacterPageUrl(name) {
+    const template = String(config.characterPageUrlTemplate || "/character.html?name={name}");
+    return template.replace("{name}", encodeURIComponent(name));
+  }
+
+  async function fetchAny(url) {
     const response = await fetch(url, {
       credentials: "include",
-      headers: { "Accept": "text/html" },
+      headers: { "Accept": "application/json, text/html;q=0.9, */*;q=0.5" },
       cache: "no-store",
     });
     if (!response.ok) {
       throw new Error(`HTTP ${response.status} fetching ${url}`);
     }
-    return response.text();
+    const contentType = String(response.headers.get("content-type") || "");
+    const text = await response.text();
+    let json = null;
+    if (contentType.includes("application/json")) {
+      try { json = JSON.parse(text); } catch (error) {}
+    }
+    if (json == null && text && (text[0] === "{" || text[0] === "[")) {
+      try { json = JSON.parse(text); } catch (error) {}
+    }
+    return { text, json, contentType };
   }
 
   function parseHtml(html) {
@@ -8163,7 +8188,56 @@ window.__minibiaCopilotBundle.installTrackerModule = function installTrackerModu
     }
   }
 
-  function extractOnlineNames(doc) {
+  function collectStrings(value, key, out) {
+    if (!value) return;
+    if (Array.isArray(value)) {
+      value.forEach((entry) => collectStrings(entry, key, out));
+      return;
+    }
+    if (typeof value === "object") {
+      const candidate = value[key];
+      if (typeof candidate === "string") {
+        const trimmed = candidate.trim();
+        if (trimmed) out.add(trimmed);
+      }
+      Object.keys(value).forEach((subKey) => collectStrings(value[subKey], key, out));
+    }
+  }
+
+  function extractOnlineNamesFromJson(json) {
+    if (!json) return new Set();
+    const out = new Set();
+    const arrayCandidate =
+      (Array.isArray(json) && json) ||
+      json.players ||
+      json.online ||
+      json.list ||
+      json.results ||
+      json.data ||
+      null;
+    if (Array.isArray(arrayCandidate)) {
+      arrayCandidate.forEach((entry) => {
+        if (typeof entry === "string") {
+          const trimmed = entry.trim();
+          if (trimmed) out.add(trimmed);
+        } else if (entry && typeof entry === "object") {
+          const candidates = [entry.name, entry.character, entry.playerName, entry.character_name, entry.charname];
+          for (const candidate of candidates) {
+            if (typeof candidate === "string" && candidate.trim()) {
+              out.add(candidate.trim());
+              break;
+            }
+          }
+        }
+      });
+    }
+    if (!out.size) {
+      collectStrings(json, "name", out);
+    }
+    return out;
+  }
+
+  function extractOnlineNamesFromHtml(doc) {
     if (!doc) return new Set();
     const names = new Set();
     const anchors = doc.querySelectorAll('a[href*="character.html"]');
@@ -8176,6 +8250,51 @@ window.__minibiaCopilotBundle.installTrackerModule = function installTrackerModu
       if (name) names.add(name);
     });
     return names;
+  }
+
+  function extractOnlineNames(result) {
+    if (!result) return new Set();
+    if (result.json) {
+      const fromJson = extractOnlineNamesFromJson(result.json);
+      if (fromJson.size) return fromJson;
+    }
+    if (result.text) {
+      return extractOnlineNamesFromHtml(parseHtml(result.text));
+    }
+    return new Set();
+  }
+
+  function extractCharacterDeathsFromJson(json, name) {
+    if (!json) return [];
+    const out = [];
+    const lowerName = name.toLowerCase();
+
+    function tryArray(candidate) {
+      if (!Array.isArray(candidate)) return;
+      candidate.forEach((entry) => {
+        if (!entry || typeof entry !== "object") return;
+        const dateRaw =
+          entry.date || entry.time || entry.timestamp || entry.at || entry.died_at || entry.created_at || null;
+        const at = dateRaw == null ? null :
+          (typeof dateRaw === "number" ? (dateRaw < 1e12 ? dateRaw * 1000 : dateRaw) : parseDeathDate(String(dateRaw)));
+        if (at == null) return;
+        const level = entry.level != null ? Number(entry.level) : null;
+        const description = String(
+          entry.description || entry.cause || entry.killer || entry.text || entry.message || ""
+        ).trim();
+        const dedupKey = `${lowerName}|${at}|${description.slice(0, 60).toLowerCase()}`;
+        out.push({ name, at, level: Number.isFinite(level) ? level : null, description, dedupKey });
+      });
+    }
+
+    tryArray(json.deaths);
+    if (!out.length) tryArray(json.death_history);
+    if (!out.length) tryArray(json.deathlist);
+    if (!out.length && json.character) {
+      tryArray(json.character.deaths);
+      tryArray(json.character.death_history);
+    }
+    return out;
   }
 
   function parseDeathDate(raw) {
@@ -8242,14 +8361,47 @@ window.__minibiaCopilotBundle.installTrackerModule = function installTrackerModu
     return Array.from(dedup.values()).sort((a, b) => a.at - b.at);
   }
 
+  async function fetchCharacterDeaths(name) {
+    try {
+      const apiResult = await fetchAny(buildCharacterApiUrl(name));
+      if (apiResult.json) {
+        const fromJson = extractCharacterDeathsFromJson(apiResult.json, name);
+        if (fromJson.length) return fromJson;
+      }
+      if (apiResult.text && !apiResult.json) {
+        const fromHtml = extractCharacterDeaths(parseHtml(apiResult.text), name);
+        if (fromHtml.length) return fromHtml;
+      }
+    } catch (error) {
+      bot.log("tracker: character api fetch failed, falling back to page", {
+        name,
+        error: error?.message || String(error),
+      });
+    }
+
+    try {
+      const pageResult = await fetchAny(buildCharacterPageUrl(name));
+      if (pageResult.json) {
+        const fromJson = extractCharacterDeathsFromJson(pageResult.json, name);
+        if (fromJson.length) return fromJson;
+      }
+      return extractCharacterDeaths(parseHtml(pageResult.text), name);
+    } catch (error) {
+      bot.log("tracker: character page fetch failed", {
+        name,
+        error: error?.message || String(error),
+      });
+      return [];
+    }
+  }
+
   async function pollOnce(now = Date.now()) {
     if (state.pollInFlight) return false;
     state.pollInFlight = true;
 
     try {
-      const onlineHtml = await fetchHtml(config.onlineUrl);
-      const onlineDoc = parseHtml(onlineHtml);
-      const onlineNames = extractOnlineNames(onlineDoc);
+      const onlineResult = await fetchAny(config.onlineUrl);
+      const onlineNames = extractOnlineNames(onlineResult);
 
       const onlineKeys = new Set();
       onlineNames.forEach((n) => onlineKeys.add(normalizeKey(n)));
@@ -8262,27 +8414,18 @@ window.__minibiaCopilotBundle.installTrackerModule = function installTrackerModu
         const key = normalizeKey(trackedName);
         if (!onlineKeys.has(key)) continue;
 
-        try {
-          const charHtml = await fetchHtml(buildCharacterUrl(trackedName));
-          const charDoc = parseHtml(charHtml);
-          const deaths = extractCharacterDeaths(charDoc, trackedName);
-          for (const death of deaths) {
-            if (death.at < cutoff) continue;
-            if (seenDeathKeys.has(death.dedupKey)) continue;
-            seenDeathKeys.add(death.dedupKey);
-            recentDeaths.push(death);
-            appended += 1;
-            bot.log("tracker: new death observed", {
-              name: death.name,
-              at: new Date(death.at).toISOString(),
-              level: death.level,
-              description: death.description.slice(0, 80),
-            });
-          }
-        } catch (error) {
-          bot.log("tracker: character fetch failed", {
-            name: trackedName,
-            error: error?.message || String(error),
+        const deaths = await fetchCharacterDeaths(trackedName);
+        for (const death of deaths) {
+          if (death.at < cutoff) continue;
+          if (seenDeathKeys.has(death.dedupKey)) continue;
+          seenDeathKeys.add(death.dedupKey);
+          recentDeaths.push(death);
+          appended += 1;
+          bot.log("tracker: new death observed", {
+            name: death.name,
+            at: new Date(death.at).toISOString(),
+            level: death.level,
+            description: death.description.slice(0, 80),
           });
         }
       }
@@ -8432,24 +8575,49 @@ window.__minibiaCopilotBundle.installTrackerModule = function installTrackerModu
   }
 
   async function debugFetch(name) {
-    const url = name ? buildCharacterUrl(name) : config.onlineUrl;
-    try {
-      const html = await fetchHtml(url);
-      const doc = parseHtml(html);
-      const meta = {
-        url,
-        htmlLength: html.length,
-        documentTitle: doc?.title || null,
-        sample: html.slice(0, 800),
-      };
-      if (!name) {
-        const names = Array.from(extractOnlineNames(doc));
-        return { ...meta, onlineSample: names.slice(0, 20), onlineCount: names.length };
+    if (!name) {
+      const url = config.onlineUrl;
+      try {
+        const result = await fetchAny(url);
+        const names = Array.from(extractOnlineNames(result));
+        return {
+          url,
+          contentType: result.contentType,
+          bodyLength: result.text?.length || 0,
+          gotJson: !!result.json,
+          sample: result.text?.slice(0, 600) || "",
+          jsonSample: result.json ? JSON.stringify(result.json).slice(0, 600) : null,
+          onlineSample: names.slice(0, 20),
+          onlineCount: names.size || names.length,
+        };
+      } catch (error) {
+        return { url, error: error?.message || String(error) };
       }
-      return { ...meta, deaths: extractCharacterDeaths(doc, name) };
-    } catch (error) {
-      return { url, error: error?.message || String(error) };
     }
+
+    const apiUrl = buildCharacterApiUrl(name);
+    const pageUrl = buildCharacterPageUrl(name);
+    let apiResult = null;
+    let pageResult = null;
+    try { apiResult = await fetchAny(apiUrl); } catch (error) { apiResult = { error: error?.message || String(error) }; }
+    try { pageResult = await fetchAny(pageUrl); } catch (error) { pageResult = { error: error?.message || String(error) }; }
+
+    const apiDeaths = apiResult?.json ? extractCharacterDeathsFromJson(apiResult.json, name) : [];
+    const pageDeaths = pageResult?.text ? extractCharacterDeaths(parseHtml(pageResult.text), name) : [];
+
+    return {
+      apiUrl,
+      apiContentType: apiResult?.contentType,
+      apiGotJson: !!apiResult?.json,
+      apiSample: apiResult?.text?.slice(0, 600) || apiResult?.error || "",
+      apiJsonSample: apiResult?.json ? JSON.stringify(apiResult.json).slice(0, 800) : null,
+      apiDeaths,
+      pageUrl,
+      pageContentType: pageResult?.contentType,
+      pageBodyLength: pageResult?.text?.length || 0,
+      pageSample: pageResult?.text?.slice(0, 600) || pageResult?.error || "",
+      pageDeaths,
+    };
   }
 
   function clearDeaths() {
