@@ -3515,6 +3515,16 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
     "label",
   ]);
   const defaultWaypointAction = "node";
+  const WAYPOINT_ICON_STYLES = {
+    node:   { fill: "#2bd1c4", stroke: "#083f49", shape: "circle",  letter: null,  textColor: "#ffffff" },
+    stand:  { fill: "#84e08a", stroke: "#0c3a0f", shape: "square",  letter: null,  textColor: "#ffffff" },
+    walk:   { fill: "#9fb3c8", stroke: "#1a2a38", shape: "circle",  letter: null,  textColor: "#ffffff" },
+    rope:   { fill: "#c98b4b", stroke: "#3a230a", shape: "circle",  letter: "R",   textColor: "#ffffff" },
+    ladder: { fill: "#f3c75a", stroke: "#5a3d0a", shape: "circle",  letter: "L",   textColor: "#1a1306" },
+    shovel: { fill: "#8a5a2b", stroke: "#241405", shape: "circle",  letter: "S",   textColor: "#ffffff" },
+    use:    { fill: "#b58cf2", stroke: "#2f1c5a", shape: "diamond", letter: "U",   textColor: "#ffffff" },
+    label:  { fill: "#d6d6d6", stroke: "#2a2a2a", shape: "diamond", letter: "*",   textColor: "#1a1a1a" },
+  };
   const state = {
     running: false,
     timerId: null,
@@ -4331,23 +4341,45 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
       context.stroke();
     }
 
-    visibleWaypoints.forEach(({ point, index }) => {
+    visibleWaypoints.forEach(({ waypoint, point, index }) => {
       const isCurrent = state.running && index === state.currentIndex;
-      const radius = isCurrent ? 7 : 5;
+      const action = waypoint?.action || defaultWaypointAction;
+      const style = WAYPOINT_ICON_STYLES[action] || WAYPOINT_ICON_STYLES[defaultWaypointAction];
+      const radius = isCurrent ? 8 : 6;
 
-      context.fillStyle = isCurrent ? "#ffcf5a" : "#2bd1c4";
-      context.strokeStyle = isCurrent ? "#6a2400" : "#083f49";
+      context.fillStyle = isCurrent ? "#ffcf5a" : style.fill;
+      context.strokeStyle = isCurrent ? "#6a2400" : style.stroke;
       context.lineWidth = 2;
-      context.beginPath();
-      context.arc(point.x, point.y, radius, 0, Math.PI * 2);
-      context.fill();
-      context.stroke();
 
-      context.fillStyle = "#ffffff";
-      context.font = "bold 11px Verdana, sans-serif";
+      if (style.shape === "square") {
+        const size = radius * 2;
+        context.beginPath();
+        context.rect(point.x - radius, point.y - radius, size, size);
+        context.fill();
+        context.stroke();
+      } else if (style.shape === "diamond") {
+        context.beginPath();
+        context.moveTo(point.x, point.y - radius);
+        context.lineTo(point.x + radius, point.y);
+        context.lineTo(point.x, point.y + radius);
+        context.lineTo(point.x - radius, point.y);
+        context.closePath();
+        context.fill();
+        context.stroke();
+      } else {
+        context.beginPath();
+        context.arc(point.x, point.y, radius, 0, Math.PI * 2);
+        context.fill();
+        context.stroke();
+      }
+
+      const label = style.letter || String(index + 1);
+      const fontSize = label.length > 1 ? 9 : 11;
+      context.fillStyle = style.textColor || "#ffffff";
+      context.font = `bold ${fontSize}px Verdana, sans-serif`;
       context.textAlign = "center";
       context.textBaseline = "middle";
-      context.fillText(String(index + 1), point.x, point.y);
+      context.fillText(label, point.x, point.y);
     });
 
     context.restore();
