@@ -108,9 +108,12 @@ window.__minibiaBotBundle.installMagicWallModule = function installMagicWallModu
     const existing = state.timers.get(key);
     const durationMs = Math.max(1000, Math.trunc(Number(spec.durationMs) || 20000));
     if (existing && existing.expiresAt > now) {
+      existing.startedAt = now;
       existing.expiresAt = now + durationMs;
       existing.spec = spec;
       existing.itemId = item?.id ?? existing.itemId;
+      bot.log("magic wall timer refreshed", { position, durationMs });
+      try { render(); } catch (error) {}
       return;
     }
 
@@ -123,6 +126,8 @@ window.__minibiaBotBundle.installMagicWallModule = function installMagicWallModu
       expiresAt: now + durationMs,
     });
     state.alarmedFor.delete(key);
+    bot.log("magic wall timer started", { position, durationMs, itemName: getItemName(item) });
+    try { render(); } catch (error) {}
   }
 
   function clearExpired(now = Date.now()) {
@@ -517,6 +522,21 @@ window.__minibiaBotBundle.installMagicWallModule = function installMagicWallModu
     return on;
   }
 
+  function testTimer(durationSeconds = 20) {
+    const playerPosition = window.gameClient?.player?.getPosition?.();
+    if (!playerPosition) {
+      bot.log("magic wall test: no player position");
+      return false;
+    }
+    const normalized = getTilePosition({ __position: playerPosition });
+    if (!normalized) return false;
+    const seconds = Math.max(1, Math.trunc(Number(durationSeconds) || 20));
+    const spec = { name: "test timer", durationMs: seconds * 1000, color: "#ffcf5a" };
+    recordTimer(normalized, { id: 0, name: "test timer" }, spec);
+    bot.log("magic wall test timer placed", { position: normalized, seconds });
+    return true;
+  }
+
   function updateConfig(nextConfig = {}) {
     if (Array.isArray(nextConfig.patternSpecs)) {
       nextConfig.patternSpecs = nextConfig.patternSpecs
@@ -550,6 +570,7 @@ window.__minibiaBotBundle.installMagicWallModule = function installMagicWallModu
     clear,
     updateConfig,
     debugEnable,
+    testTimer,
     config,
   };
 };
