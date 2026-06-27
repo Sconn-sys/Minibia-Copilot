@@ -6549,6 +6549,8 @@ window.__minibiaBotBundle.installMagicWallModule = function installMagicWallModu
     timers: new Map(),
     patches: null,
     alarmedFor: new Set(),
+    installRetryTimerId: null,
+    debugSeen: [],
   };
 
   const config = Object.assign(
@@ -6559,6 +6561,7 @@ window.__minibiaBotBundle.installMagicWallModule = function installMagicWallModu
       audioLeadMs: 3000,
       flashLeadMs: 3000,
       showFloorChanges: false,
+      debugLogItems: false,
     },
     bot.storage.get(configStorageKey, {})
   );
@@ -6577,12 +6580,27 @@ window.__minibiaBotBundle.installMagicWallModule = function installMagicWallModu
 
   function getItemName(item) {
     if (!item) return "";
-    const defs =
-      window.gameClient?.itemDefinitionsByCid ||
-      window.gameClient?.itemDefinitions ||
-      null;
-    const def = defs ? defs[item.id] : null;
-    return normalizeItemName(def?.properties?.name || item?.name);
+    const gc = window.gameClient || {};
+    const id = item.id;
+    const candidates = [];
+    if (id != null) {
+      const fromCid = gc.itemDefinitionsByCid?.[id];
+      const fromSid = gc.itemDefinitionsBySid?.[id];
+      const fromGeneric = gc.itemDefinitions?.[id];
+      candidates.push(
+        fromCid?.properties?.name,
+        fromCid?.name,
+        fromSid?.properties?.name,
+        fromSid?.name,
+        fromGeneric?.properties?.name,
+        fromGeneric?.name
+      );
+    }
+    candidates.push(item.name, item.properties?.name);
+    for (const candidate of candidates) {
+      if (candidate) return normalizeItemName(candidate);
+    }
+    return "";
   }
 
   function matchPatternSpec(itemName) {
@@ -6651,6 +6669,14 @@ window.__minibiaBotBundle.installMagicWallModule = function installMagicWallModu
   function handleAddItem(position, item) {
     if (!config.enabled || !position || !item) return;
     const itemName = getItemName(item);
+
+    if (config.debugLogItems) {
+      const entry = { id: item.id, name: itemName, position: getTilePosition({ __position: position }) };
+      state.debugSeen.push(entry);
+      if (state.debugSeen.length > 50) state.debugSeen.shift();
+      console.log("[minibia-bot] magic-wall item added", entry);
+    }
+
     const spec = matchPatternSpec(itemName);
     if (!spec) return;
     const normalized = getTilePosition({ __position: position });
@@ -6672,20 +6698,44 @@ window.__minibiaBotBundle.installMagicWallModule = function installMagicWallModu
     }
   }
 
-  function installPatches() {
-    if (state.patches) return;
+  function getWorldPrototype() {
+    try {
+      if (typeof World !== "undefined" && World?.prototype) return World.prototype;
+    } catch (error) {}
+    const world = window.gameClient?.world;
+    if (world) return Object.getPrototypeOf(world);
+    return null;
+  }
 
-    const World = window.World?.prototype;
-    const Tile = window.Tile?.prototype;
-    if (!World || !Tile) {
-      bot.log("magic wall: cannot install hooks, World/Tile prototypes unavailable");
-      return;
+  function getTilePrototype() {
+    try {
+      if (typeof Tile !== "undefined" && Tile?.prototype) return Tile.prototype;
+    } catch (error) {}
+    const chunks = window.gameClient?.world?.chunks || [];
+    for (const chunk of chunks) {
+      const tiles = chunk?.tiles;
+      if (Array.isArray(tiles)) {
+        for (const tile of tiles) {
+          if (tile) return Object.getPrototypeOf(tile);
+        }
+      }
+    }
+    return null;
+  }
+
+  function installPatches() {
+    if (state.patches) return true;
+
+    const WorldProto = getWorldPrototype();
+    const TileProto = getTilePrototype();
+    if (!WorldProto || !TileProto || typeof WorldProto.addItem !== "function" || typeof TileProto.removeItem !== "function") {
+      return false;
     }
 
-    const originalAddItem = World.addItem;
-    const originalRemoveItem = Tile.removeItem;
+    const originalAddItem = WorldProto.addItem;
+    const originalRemoveItem = TileProto.removeItem;
 
-    World.addItem = function patchedAddItem(position, item, slot) {
+    WorldProto.addItem = function patchedAddItem(position, item, slot) {
       const result = originalAddItem.call(this, position, item, slot);
       try {
         handleAddItem(position, item);
@@ -6695,7 +6745,7 @@ window.__minibiaBotBundle.installMagicWallModule = function installMagicWallModu
       return result;
     };
 
-    Tile.removeItem = function patchedRemoveItem(index, count) {
+    TileProto.removeItem = function patchedRemoveItem(index, count) {
       let resolvedIndex = index;
       if (resolvedIndex === 0xFF) {
         resolvedIndex = Array.isArray(this.items) ? this.items.length - 1 : -1;
@@ -6708,14 +6758,44 @@ window.__minibiaBotBundle.installMagicWallModule = function installMagicWallModu
       return originalRemoveItem.call(this, index, count);
     };
 
-    state.patches = { World, originalAddItem, Tile, originalRemoveItem };
+    state.patches = {
+      WorldProto,
+      originalAddItem,
+      TileProto,
+      originalRemoveItem,
+    };
+    bot.log("magic wall hooks installed");
+    return true;
+  }
+
+  function stopInstallRetry() {
+    if (state.installRetryTimerId != null) {
+      window.clearInterval(state.installRetryTimerId);
+      state.installRetryTimerId = null;
+    }
+  }
+
+  function tryInstallWithRetry() {
+    if (installPatches()) return;
+    bot.log("magic wall: world not ready, retrying every 1s");
+    stopInstallRetry();
+    state.installRetryTimerId = window.setInterval(() => {
+      if (!state.enabled) {
+        stopInstallRetry();
+        return;
+      }
+      if (installPatches()) {
+        stopInstallRetry();
+      }
+    }, 1000);
   }
 
   function uninstallPatches() {
+    stopInstallRetry();
     if (!state.patches) return;
-    const { World, originalAddItem, Tile, originalRemoveItem } = state.patches;
-    if (World.addItem !== originalAddItem) World.addItem = originalAddItem;
-    if (Tile.removeItem !== originalRemoveItem) Tile.removeItem = originalRemoveItem;
+    const { WorldProto, originalAddItem, TileProto, originalRemoveItem } = state.patches;
+    if (WorldProto.addItem !== originalAddItem) WorldProto.addItem = originalAddItem;
+    if (TileProto.removeItem !== originalRemoveItem) TileProto.removeItem = originalRemoveItem;
     state.patches = null;
   }
 
@@ -6911,7 +6991,7 @@ window.__minibiaBotBundle.installMagicWallModule = function installMagicWallModu
       return false;
     }
     state.enabled = true;
-    installPatches();
+    tryInstallWithRetry();
     startOverlay();
     bot.log("magic wall timer started", { patternSpecs: config.patternSpecs });
     return true;
@@ -6954,9 +7034,19 @@ window.__minibiaBotBundle.installMagicWallModule = function installMagicWallModu
   function status() {
     return {
       running: state.enabled,
+      hooksInstalled: !!state.patches,
+      retryingInstall: state.installRetryTimerId != null,
       config: { ...config },
       timers: list(),
+      recentItemsSeen: state.debugSeen.slice(-10),
     };
+  }
+
+  function debugEnable(on = true) {
+    config.debugLogItems = !!on;
+    persistConfig();
+    bot.log("magic wall debug logging " + (on ? "ON" : "OFF"));
+    return on;
   }
 
   function updateConfig(nextConfig = {}) {
@@ -6991,6 +7081,7 @@ window.__minibiaBotBundle.installMagicWallModule = function installMagicWallModu
     list,
     clear,
     updateConfig,
+    debugEnable,
     config,
   };
 };
