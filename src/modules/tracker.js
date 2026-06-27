@@ -103,16 +103,25 @@ window.__minibiaCopilotBundle.installTrackerModule = function installTrackerModu
   }
 
   function getPlayerInfo(name) {
-    return characterInfoCache[normalizeKey(name)] || null;
+    const raw = characterInfoCache[normalizeKey(name)];
+    if (!raw) return null;
+    return {
+      level: raw.level,
+      vocation: resolveVocation(raw.vocation),
+      lastUpdatedAt: raw.lastUpdatedAt || 0,
+    };
   }
 
   function updatePlayerInfo(name, level, vocation, now = Date.now()) {
     const key = normalizeKey(name);
     if (!key) return;
     const current = characterInfoCache[key] || { level: null, vocation: null, lastUpdatedAt: 0 };
+    const resolvedVocation = vocation != null && vocation !== ""
+      ? resolveVocation(vocation)
+      : current.vocation;
     const next = {
       level: Number.isFinite(Number(level)) ? Number(level) : current.level,
-      vocation: vocation ? String(vocation).trim() : current.vocation,
+      vocation: resolvedVocation,
       lastUpdatedAt: now,
     };
     if (next.level === current.level && next.vocation === current.vocation) {
@@ -300,6 +309,32 @@ window.__minibiaCopilotBundle.installTrackerModule = function installTrackerModu
     return new Set();
   }
 
+  const VOCATION_NAMES = {
+    0: "None",
+    1: "Knight",
+    2: "Paladin",
+    3: "Sorcerer",
+    4: "Druid",
+    5: "Elite Knight",
+    6: "Royal Paladin",
+    7: "Master Sorcerer",
+    8: "Elder Druid",
+  };
+
+  function resolveVocation(value) {
+    if (value == null) return null;
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return VOCATION_NAMES[value] || `Vocation ${value}`;
+    }
+    const str = String(value).trim();
+    if (!str) return null;
+    if (/^-?\d+$/.test(str)) {
+      const n = Number(str);
+      return VOCATION_NAMES[n] || `Vocation ${n}`;
+    }
+    return str;
+  }
+
   function extractCharacterInfoFromJson(json) {
     if (!json || typeof json !== "object") return { level: null, vocation: null };
     const candidates = [json, json.character, json.player, json.data, json.profile].filter(Boolean);
@@ -312,7 +347,7 @@ window.__minibiaCopilotBundle.installTrackerModule = function installTrackerModu
       }
       if (vocation == null) {
         const voc = candidate.vocation ?? candidate.vocationName ?? candidate.class ?? candidate.profession ?? candidate.job;
-        if (voc) vocation = String(voc).trim();
+        if (voc != null && voc !== "") vocation = resolveVocation(voc);
       }
       if (level != null && vocation) break;
     }
