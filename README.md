@@ -12,12 +12,14 @@
 6. Paste this and press `Enter`:
 
 ```js
-fetch("https://raw.githubusercontent.com/Sconn-sys/Minibia-Copilot/refs/heads/main/minibia-copilot.js")
+fetch("https://raw.githubusercontent.com/Sconn-sys/Minibia-Bot/refs/heads/main/minibia-copilot.js?v=" + Date.now())
   .then((r) => r.text())
   .then((code) => eval(code));
 ```
 
 If the console warns about pasting code, type `allow pasting` first and press `Enter`, then paste the script loader again.
+
+The `?v=` + timestamp at the end defeats GitHub's CDN cache, so every paste fetches the freshest build (otherwise updates can take up to 5 minutes to appear).
 
 ## Code
 
@@ -38,7 +40,7 @@ This repo now has a simple source layout for browser-loaded Minibia routines, wh
 **Reload In Game**
 
 ```js
-fetch("http://127.0.0.1:8000/minibia-copilot.js")
+fetch("http://127.0.0.1:8000/minibia-copilot.js?v=" + Date.now())
   .then((r) => r.text())
   .then((code) => eval(code));
 ```
