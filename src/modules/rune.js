@@ -1,7 +1,7 @@
-window.__minibiaBotBundle = window.__minibiaBotBundle || {};
+window.__minibiaCopilotBundle = window.__minibiaCopilotBundle || {};
 
-window.__minibiaBotBundle.installRuneModule = function installRuneModule(bot) {
-  const configStorageKey = "minibiaBot.rune.config";
+window.__minibiaCopilotBundle.installRuneModule = function installRuneModule(bot) {
+  const configStorageKey = "minibiaCopilot.rune.config";
   const state = {
     running: false,
     timerId: null,

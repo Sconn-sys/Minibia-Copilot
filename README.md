@@ -1,4 +1,4 @@
-# Minibia Bot
+# Minibia Copilot
 
 ## Load From GitHub In Chrome Or Edge
 
@@ -12,7 +12,7 @@
 6. Paste this and press `Enter`:
 
 ```js
-fetch("https://raw.githubusercontent.com/Sconn-sys/Minibia-Bot/refs/heads/main/pz-bot.js")
+fetch("https://raw.githubusercontent.com/Sconn-sys/Minibia-Copilot/refs/heads/main/minibia-copilot.js")
   .then((r) => r.text())
   .then((code) => eval(code));
 ```
@@ -21,24 +21,24 @@ If the console warns about pasting code, type `allow pasting` first and press `E
 
 ## Code
 
-This repo now has a simple source layout for browser-loaded Minibia routines, while still serving a single `pz-bot.js` bundle that you can reload from DevTools.
+This repo now has a simple source layout for browser-loaded Minibia routines, while still serving a single `minibia-copilot.js` bundle that you can reload from DevTools.
 
 **Layout**
 
-- [pz-bot.js](/home/yuno/minibia-bot/pz-bot.js): built browser bundle you load in game
-- [src/core.js](/home/yuno/minibia-bot/src/core.js): shared runtime helpers
-- [src/modules/pz.js](/home/yuno/minibia-bot/src/modules/pz.js): PZ/home navigation module
-- [src/modules/rune.js](/home/yuno/minibia-bot/src/modules/rune.js): rune loop module
-- [src/modules/heal.js](/home/yuno/minibia-bot/src/modules/heal.js): auto heal loop for hp and mana hotkeys
-- [src/ui/panel.js](/home/yuno/minibia-bot/src/ui/panel.js): draggable in-game panel
-- [src/main.js](/home/yuno/minibia-bot/src/main.js): bundle entrypoint
-- [build.sh](/home/yuno/minibia-bot/build.sh): rebuilds `pz-bot.js` from `src/`
-- [cors_http_server.py](/home/yuno/minibia-bot/cors_http_server.py): local dev server with CORS headers for browser fetches
+- [minibia-copilot.js](/home/yuno/minibia-copilot/minibia-copilot.js): built browser bundle you load in game
+- [src/core.js](/home/yuno/minibia-copilot/src/core.js): shared runtime helpers
+- [src/modules/pz.js](/home/yuno/minibia-copilot/src/modules/pz.js): PZ/home navigation module
+- [src/modules/rune.js](/home/yuno/minibia-copilot/src/modules/rune.js): rune loop module
+- [src/modules/heal.js](/home/yuno/minibia-copilot/src/modules/heal.js): auto heal loop for hp and mana hotkeys
+- [src/ui/panel.js](/home/yuno/minibia-copilot/src/ui/panel.js): draggable in-game panel
+- [src/main.js](/home/yuno/minibia-copilot/src/main.js): bundle entrypoint
+- [build.sh](/home/yuno/minibia-copilot/build.sh): rebuilds `minibia-copilot.js` from `src/`
+- [cors_http_server.py](/home/yuno/minibia-copilot/cors_http_server.py): local dev server with CORS headers for browser fetches
 
 **Reload In Game**
 
 ```js
-fetch("http://127.0.0.1:8000/pz-bot.js")
+fetch("http://127.0.0.1:8000/minibia-copilot.js")
   .then((r) => r.text())
   .then((code) => eval(code));
 ```
@@ -54,34 +54,34 @@ That serves this folder on `http://127.0.0.1:8000/` with `Access-Control-Allow-O
 **Main API**
 
 ```js
-minibiaBot.status()
+minibiaCopilot.status()
 
-minibiaBot.pz.setHomePzCurrentSpot()
-minibiaBot.pz.goToHomePz()
-minibiaBot.pz.goToNearestPz()
+minibiaCopilot.pz.setHomePzCurrentSpot()
+minibiaCopilot.pz.goToHomePz()
+minibiaCopilot.pz.goToNearestPz()
 
-minibiaBot.rune.start()
-minibiaBot.rune.stop()
-minibiaBot.rune.status()
+minibiaCopilot.rune.start()
+minibiaCopilot.rune.stop()
+minibiaCopilot.rune.status()
 
-minibiaBot.heal.start()
-minibiaBot.heal.stop()
-minibiaBot.heal.status()
+minibiaCopilot.heal.start()
+minibiaCopilot.heal.stop()
+minibiaCopilot.heal.status()
 
-minibiaBot.magicWall.start()           // overlay 20s countdown on placed magic walls
-minibiaBot.magicWall.stop()
-minibiaBot.magicWall.status()
-minibiaBot.magicWall.list()            // active timers
-minibiaBot.magicWall.updateConfig({ audioOnExpiry: true, flashLeadMs: 3000 })
+minibiaCopilot.magicWall.start()           // overlay 20s countdown on placed magic walls
+minibiaCopilot.magicWall.stop()
+minibiaCopilot.magicWall.status()
+minibiaCopilot.magicWall.list()            // active timers
+minibiaCopilot.magicWall.updateConfig({ audioOnExpiry: true, flashLeadMs: 3000 })
 
 // Multi-floor cavebot waypoints (ElfBot/NeoBot style):
-minibiaBot.cave.addWaypointCurrentSpot()                 // "node" (default)
-minibiaBot.cave.addStandWaypointCurrentSpot()            // exact tile
-minibiaBot.cave.addRopeWaypointCurrentSpot()             // use rope on this tile
-minibiaBot.cave.addLadderWaypointCurrentSpot()           // use ladder on this tile
-minibiaBot.cave.addShovelWaypointCurrentSpot()           // dig with shovel
-minibiaBot.cave.addUseWaypointCurrentSpot()              // single click-use (levers, holes you step on)
-minibiaBot.cave.addLabelWaypoint("depot")
+minibiaCopilot.cave.addWaypointCurrentSpot()                 // "node" (default)
+minibiaCopilot.cave.addStandWaypointCurrentSpot()            // exact tile
+minibiaCopilot.cave.addRopeWaypointCurrentSpot()             // use rope on this tile
+minibiaCopilot.cave.addLadderWaypointCurrentSpot()           // use ladder on this tile
+minibiaCopilot.cave.addShovelWaypointCurrentSpot()           // dig with shovel
+minibiaCopilot.cave.addUseWaypointCurrentSpot()              // single click-use (levers, holes you step on)
+minibiaCopilot.cave.addLabelWaypoint("depot")
 ```
 
 Backward-compatible alias:
@@ -100,7 +100,7 @@ pzBot.goToNearestPz()
 
 - The panel is draggable and saves its position in `localStorage`.
 - Reloading the bundle destroys the existing panel and stops the existing loops before installing the new one.
-- The served runtime is `pz-bot.js`; source lives under `src/`.
+- The served runtime is `minibia-copilot.js`; source lives under `src/`.
 
 
 ## Download minibia source

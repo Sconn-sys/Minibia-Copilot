@@ -1,9 +1,9 @@
-window.__minibiaBotBundle = window.__minibiaBotBundle || {};
+window.__minibiaCopilotBundle = window.__minibiaCopilotBundle || {};
 
-window.__minibiaBotBundle.createBot = function createBot() {
+window.__minibiaCopilotBundle.createBot = function createBot() {
   const cleanups = [];
   const defaultAlarmAudioSrc = "https://upload.wikimedia.org/wikipedia/commons/transcoded/3/3f/ACA_Allertor_125_video.ogv/ACA_Allertor_125_video.ogv.480p.vp9.webm";
-  const alarmAudioSrcStorageKey = "minibiaBot.audio.alarmSrc";
+  const alarmAudioSrcStorageKey = "minibiaCopilot.audio.alarmSrc";
   const recentSentChats = [];
   const reconnectButtonSelectors = [
     "button",
@@ -31,7 +31,7 @@ window.__minibiaBotBundle.createBot = function createBot() {
       try {
         fn();
       } catch (error) {
-        console.error("[minibia-bot] cleanup failed", error);
+        console.error("[minibia-copilot] cleanup failed", error);
       }
     }
   }
@@ -60,7 +60,7 @@ window.__minibiaBotBundle.createBot = function createBot() {
       alarmAudio.removeAttribute("src");
       alarmAudio.load();
     } catch (error) {
-      console.error("[minibia-bot] audio cleanup failed", error);
+      console.error("[minibia-copilot] audio cleanup failed", error);
     }
 
     alarmAudio = null;
@@ -222,7 +222,7 @@ window.__minibiaBotBundle.createBot = function createBot() {
 
     reconnectElement.click();
     lastReconnectClickAt = now;
-    console.log("[minibia-bot] clicked reconnect");
+    console.log("[minibia-copilot] clicked reconnect");
     return true;
   }
 
@@ -235,7 +235,7 @@ window.__minibiaBotBundle.createBot = function createBot() {
       try {
         tryClickReconnect();
       } catch (error) {
-        console.error("[minibia-bot] reconnect watcher failed", error);
+        console.error("[minibia-copilot] reconnect watcher failed", error);
       }
     };
 
@@ -314,7 +314,7 @@ window.__minibiaBotBundle.createBot = function createBot() {
       runCleanups();
     },
     log(...args) {
-      console.log("[minibia-bot]", ...args);
+      console.log("[minibia-copilot]", ...args);
     },
     storage: {
       get(key, fallback = null) {
@@ -438,7 +438,7 @@ window.__minibiaBotBundle.createBot = function createBot() {
 
         return true;
       } catch (error) {
-        console.error("[minibia-bot] audio unlock failed", error);
+        console.error("[minibia-copilot] audio unlock failed", error);
         return false;
       }
     },
@@ -462,7 +462,7 @@ window.__minibiaBotBundle.createBot = function createBot() {
 
         return true;
       } catch (error) {
-        console.error("[minibia-bot] alarm failed", error);
+        console.error("[minibia-copilot] alarm failed", error);
         return false;
       }
     },

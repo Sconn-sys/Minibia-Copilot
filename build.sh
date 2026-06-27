@@ -18,4 +18,4 @@ cat \
   src/modules/magic-wall.js \
   src/ui/panel.js \
   src/main.js \
-  > pz-bot.js
+  > minibia-copilot.js

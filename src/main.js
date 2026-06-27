@@ -1,16 +1,44 @@
 (() => {
-  const bundle = window.__minibiaBotBundle || window.__minibiaBotReloadBundle || {};
+  const bundle = window.__minibiaCopilotBundle || window.__minibiaCopilotReloadBundle || {};
+
+  function migrateLegacyStorage() {
+    const legacyPrefix = "minibiaBot.";
+    const newPrefix = "minibiaCopilot.";
+    let migrated = 0;
+    try {
+      const keys = [];
+      for (let index = 0; index < window.localStorage.length; index += 1) {
+        const key = window.localStorage.key(index);
+        if (key && key.startsWith(legacyPrefix)) keys.push(key);
+      }
+      keys.forEach((legacyKey) => {
+        const newKey = newPrefix + legacyKey.slice(legacyPrefix.length);
+        if (window.localStorage.getItem(newKey) != null) return;
+        const value = window.localStorage.getItem(legacyKey);
+        if (value != null) {
+          window.localStorage.setItem(newKey, value);
+          migrated += 1;
+        }
+      });
+      if (migrated > 0) {
+        console.log("[minibia-copilot] migrated " + migrated + " legacy settings from minibiaBot.* (originals kept)");
+      }
+    } catch (error) {
+      console.error("[minibia-copilot] legacy storage migration failed", error);
+    }
+  }
+
   const persistedEnabledModules = [
-    ["rune", "minibiaBot.rune.config"],
-    ["heal", "minibiaBot.heal.config"],
-    ["invisible", "minibiaBot.invisible.config"],
-    ["magicShield", "minibiaBot.magicShield.config"],
-    ["attack", "minibiaBot.attack.config"],
-    ["cave", "minibiaBot.cave.config"],
-    ["equipRing", "minibiaBot.equipRing.config"],
-    ["eat", "minibiaBot.eat.config"],
-    ["talk", "minibiaBot.talk.config"],
-    ["magicWall", "minibiaBot.magicWall.config"],
+    ["rune", "minibiaCopilot.rune.config"],
+    ["heal", "minibiaCopilot.heal.config"],
+    ["invisible", "minibiaCopilot.invisible.config"],
+    ["magicShield", "minibiaCopilot.magicShield.config"],
+    ["attack", "minibiaCopilot.attack.config"],
+    ["cave", "minibiaCopilot.cave.config"],
+    ["equipRing", "minibiaCopilot.equipRing.config"],
+    ["eat", "minibiaCopilot.eat.config"],
+    ["talk", "minibiaCopilot.talk.config"],
+    ["magicWall", "minibiaCopilot.magicWall.config"],
   ];
 
   function getPersistedEnabledSnapshot(bot) {
@@ -39,7 +67,7 @@
         config.enabled = snapshot[moduleName];
         window.localStorage.setItem(storageKey, JSON.stringify(config));
       } catch (error) {
-        console.error("[minibia-bot] failed to restore persisted enabled state", {
+        console.error("[minibia-copilot] failed to restore persisted enabled state", {
           module: moduleName,
           error,
         });
@@ -48,10 +76,15 @@
   }
 
   function boot(currentBundle = bundle) {
-    const previousEnabledSnapshot = getPersistedEnabledSnapshot(window.minibiaBot);
+    const previousEnabledSnapshot = getPersistedEnabledSnapshot(
+      window.minibiaCopilot || window.minibiaBot
+    );
 
-    if (window.minibiaBot?.destroy) {
-      window.minibiaBot.destroy();
+    if (window.minibiaCopilot?.destroy) {
+      window.minibiaCopilot.destroy();
+    }
+    if (window.minibiaBot && window.minibiaBot !== window.minibiaCopilot && window.minibiaBot.destroy) {
+      try { window.minibiaBot.destroy(); } catch (error) {}
     }
 
     restorePersistedEnabledSnapshot(previousEnabledSnapshot);
@@ -77,7 +110,7 @@
 
     bot.start = (...args) => bot.rune.start(...args);
     bot.stop = (...args) => bot.rune.stop(...args);
-    bot.reload = () => window.minibiaBotReload?.();
+    bot.reload = () => window.minibiaCopilotReload?.();
     bot.status = () => ({
       version: bot.version,
       pz: {
@@ -97,50 +130,53 @@
       magicWall: bot.magicWall.status(),
     });
 
+    window.minibiaCopilot = bot;
     window.minibiaBot = bot;
     window.pzBot = bot.pz;
 
-    console.log("[minibia-bot] ready", {
+    console.log("[minibia-copilot] ready", {
       version: bot.version,
       modules: ["pz", "xray", "panic", "rune", "heal", "invisible", "magicShield", "attack", "cave", "equipRing", "eat", "talk", "magicWall", "ui"],
     });
-    console.log("minibiaBot.reload()");
-    console.log("minibiaBot.xray.status()");
-    console.log("minibiaBot.panic.status()");
-    console.log("minibiaBot.pz.goToNearestPz()");
-    console.log("minibiaBot.pz.setHomePzCurrentSpot()");
-    console.log("minibiaBot.pz.goToHomePz()");
-    console.log("minibiaBot.rune.start()");
-    console.log("minibiaBot.rune.stop()");
-    console.log("minibiaBot.heal.start()");
-    console.log("minibiaBot.heal.stop()");
-    console.log("minibiaBot.invisible.start()");
-    console.log("minibiaBot.invisible.stop()");
-    console.log("minibiaBot.magicShield.start()");
-    console.log("minibiaBot.magicShield.stop()");
-    console.log("minibiaBot.attack.start()");
-    console.log("minibiaBot.attack.stop()");
-    console.log("minibiaBot.cave.addWaypointCurrentSpot()");
-    console.log("minibiaBot.cave.start()");
-    console.log("minibiaBot.cave.stop()");
-    console.log("minibiaBot.equipRing.start()");
-    console.log("minibiaBot.equipRing.stop()");
-    console.log("minibiaBot.eat.start()");
-    console.log("minibiaBot.eat.stop()");
-    console.log("minibiaBot.talk.updateConfig({ apiKey: \"...\" })");
-    console.log("minibiaBot.talk.start()");
-    console.log("minibiaBot.talk.stop()");
-    console.log("minibiaBot.magicWall.start()");
-    console.log("minibiaBot.magicWall.stop()");
-    console.log("minibiaBot.cave.addRopeWaypointCurrentSpot()");
-    console.log("minibiaBot.cave.addLadderWaypointCurrentSpot()");
-    console.log("minibiaBot.cave.addShovelWaypointCurrentSpot()");
-    console.log("minibiaBot.cave.addUseWaypointCurrentSpot()");
+    console.log("minibiaCopilot.reload()");
+    console.log("minibiaCopilot.xray.status()");
+    console.log("minibiaCopilot.panic.status()");
+    console.log("minibiaCopilot.pz.goToNearestPz()");
+    console.log("minibiaCopilot.pz.setHomePzCurrentSpot()");
+    console.log("minibiaCopilot.pz.goToHomePz()");
+    console.log("minibiaCopilot.rune.start()");
+    console.log("minibiaCopilot.rune.stop()");
+    console.log("minibiaCopilot.heal.start()");
+    console.log("minibiaCopilot.heal.stop()");
+    console.log("minibiaCopilot.invisible.start()");
+    console.log("minibiaCopilot.invisible.stop()");
+    console.log("minibiaCopilot.magicShield.start()");
+    console.log("minibiaCopilot.magicShield.stop()");
+    console.log("minibiaCopilot.attack.start()");
+    console.log("minibiaCopilot.attack.stop()");
+    console.log("minibiaCopilot.cave.addWaypointCurrentSpot()");
+    console.log("minibiaCopilot.cave.start()");
+    console.log("minibiaCopilot.cave.stop()");
+    console.log("minibiaCopilot.equipRing.start()");
+    console.log("minibiaCopilot.equipRing.stop()");
+    console.log("minibiaCopilot.eat.start()");
+    console.log("minibiaCopilot.eat.stop()");
+    console.log("minibiaCopilot.talk.updateConfig({ apiKey: \"...\" })");
+    console.log("minibiaCopilot.talk.start()");
+    console.log("minibiaCopilot.talk.stop()");
+    console.log("minibiaCopilot.magicWall.start()");
+    console.log("minibiaCopilot.magicWall.stop()");
+    console.log("minibiaCopilot.cave.addRopeWaypointCurrentSpot()");
+    console.log("minibiaCopilot.cave.addLadderWaypointCurrentSpot()");
+    console.log("minibiaCopilot.cave.addShovelWaypointCurrentSpot()");
+    console.log("minibiaCopilot.cave.addUseWaypointCurrentSpot()");
     return bot;
   }
 
-  window.__minibiaBotReloadBundle = bundle;
-  window.minibiaBotReload = () => boot(window.__minibiaBotReloadBundle || bundle);
-  delete window.__minibiaBotBundle;
+  window.__minibiaCopilotReloadBundle = bundle;
+  window.minibiaCopilotReload = () => boot(window.__minibiaCopilotReloadBundle || bundle);
+  window.minibiaBotReload = window.minibiaCopilotReload;
+  delete window.__minibiaCopilotBundle;
+  migrateLegacyStorage();
   boot(bundle);
 })();

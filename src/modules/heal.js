@@ -1,7 +1,7 @@
-window.__minibiaBotBundle = window.__minibiaBotBundle || {};
+window.__minibiaCopilotBundle = window.__minibiaCopilotBundle || {};
 
-window.__minibiaBotBundle.installHealModule = function installHealModule(bot) {
-  const configStorageKey = "minibiaBot.heal.config";
+window.__minibiaCopilotBundle.installHealModule = function installHealModule(bot) {
+  const configStorageKey = "minibiaCopilot.heal.config";
   const state = {
     running: false,
     timerId: null,

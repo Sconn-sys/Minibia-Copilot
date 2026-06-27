@@ -1,13 +1,13 @@
-window.__minibiaBotBundle = window.__minibiaBotBundle || {};
+window.__minibiaCopilotBundle = window.__minibiaCopilotBundle || {};
 
-window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
-  const configStorageKey = "minibiaBot.cave.config";
-  const routeStorageKey = "minibiaBot.cave.route";
-  const transitionStorageKey = "minibiaBot.cave.transitions";
-  const presetStorageKey = "minibiaBot.cave.presets";
+window.__minibiaCopilotBundle.installCaveModule = function installCaveModule(bot) {
+  const configStorageKey = "minibiaCopilot.cave.config";
+  const routeStorageKey = "minibiaCopilot.cave.route";
+  const transitionStorageKey = "minibiaCopilot.cave.transitions";
+  const presetStorageKey = "minibiaCopilot.cave.presets";
   const defaultPresetName = "Default";
-  const minimapOverlayRootId = "minibia-bot-cave-minimap-overlay";
-  const minimapOverlayStyleId = "minibia-bot-cave-minimap-overlay-style";
+  const minimapOverlayRootId = "minibia-copilot-cave-minimap-overlay";
+  const minimapOverlayStyleId = "minibia-copilot-cave-minimap-overlay-style";
   const ladderItemIds = new Set([1948, 1968]);
   const ropeNamePattern = /\brope\b/i;
   const shovelNamePattern = /\bshovel\b/i;

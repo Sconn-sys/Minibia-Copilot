@@ -1,9 +1,9 @@
-window.__minibiaBotBundle = window.__minibiaBotBundle || {};
+window.__minibiaCopilotBundle = window.__minibiaCopilotBundle || {};
 
-window.__minibiaBotBundle.installXrayModule = function installXrayModule(bot) {
-  const configStorageKey = "minibiaBot.xray.config";
-  const overlayRootId = "minibia-bot-xray-overlay";
-  const overlayStyleId = "minibia-bot-xray-overlay-style";
+window.__minibiaCopilotBundle.installXrayModule = function installXrayModule(bot) {
+  const configStorageKey = "minibiaCopilot.xray.config";
+  const overlayRootId = "minibia-copilot-xray-overlay";
+  const overlayStyleId = "minibia-copilot-xray-overlay-style";
   const overlayState = {
     running: false,
     timerId: null,
@@ -213,7 +213,7 @@ window.__minibiaBotBundle.installXrayModule = function installXrayModule(bot) {
         z-index: 999998;
       }
 
-      #${overlayRootId} .mb-xray-marker {
+      #${overlayRootId} .mc-xray-marker {
         position: fixed;
         transform: translate(-50%, -50%);
         padding: 2px 6px;
@@ -226,7 +226,7 @@ window.__minibiaBotBundle.installXrayModule = function installXrayModule(bot) {
         white-space: nowrap;
       }
 
-      #${overlayRootId} .mb-xray-marker.mb-xray-marker-offscreen {
+      #${overlayRootId} .mc-xray-marker.mc-xray-marker-offscreen {
         border-color: rgba(123, 235, 178, 0.92);
         background: rgba(11, 61, 43, 0.8);
         color: #d8ffea;
@@ -288,10 +288,10 @@ window.__minibiaBotBundle.installXrayModule = function installXrayModule(bot) {
       const dy = pos.y - me.y;
       const healthLabel = readCreatureHealth(creature);
       const marker = document.createElement("div");
-      marker.className = "mb-xray-marker";
+      marker.className = "mc-xray-marker";
 
       if (pos.z === me.z) {
-        marker.classList.add("mb-xray-marker-offscreen");
+        marker.classList.add("mc-xray-marker-offscreen");
         marker.textContent = getSameFloorOffscreenMarkerText(creature, healthLabel);
         marker.style.left = `${clamp(
           viewportRect.left + ((dx + 8.5) * tileWidth),

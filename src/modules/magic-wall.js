@@ -1,9 +1,9 @@
-window.__minibiaBotBundle = window.__minibiaBotBundle || {};
+window.__minibiaCopilotBundle = window.__minibiaCopilotBundle || {};
 
-window.__minibiaBotBundle.installMagicWallModule = function installMagicWallModule(bot) {
-  const configStorageKey = "minibiaBot.magicWall.config";
-  const overlayRootId = "minibia-bot-magic-wall-overlay";
-  const overlayStyleId = "minibia-bot-magic-wall-overlay-style";
+window.__minibiaCopilotBundle.installMagicWallModule = function installMagicWallModule(bot) {
+  const configStorageKey = "minibiaCopilot.magicWall.config";
+  const overlayRootId = "minibia-copilot-magic-wall-overlay";
+  const overlayStyleId = "minibia-copilot-magic-wall-overlay-style";
 
   const defaultPatternSpecs = [
     { name: "magic wall", durationMs: 20000, color: "#7ec8ff" },
@@ -114,7 +114,7 @@ window.__minibiaBotBundle.installMagicWallModule = function installMagicWallModu
       existing.itemId = item?.id ?? existing.itemId;
       bot.log("magic wall timer refreshed", { position, durationMs });
       try { render(); } catch (error) {
-        console.error("[minibia-bot] magic-wall render failed", error);
+        console.error("[minibia-copilot] magic-wall render failed", error);
       }
       return;
     }
@@ -130,7 +130,7 @@ window.__minibiaBotBundle.installMagicWallModule = function installMagicWallModu
     state.alarmedFor.delete(key);
     bot.log("magic wall timer started", { position, durationMs, itemName: getItemName(item) });
     try { render(); } catch (error) {
-      console.error("[minibia-bot] magic-wall render failed", error);
+      console.error("[minibia-copilot] magic-wall render failed", error);
     }
   }
 
@@ -151,7 +151,7 @@ window.__minibiaBotBundle.installMagicWallModule = function installMagicWallModu
       const entry = { id: item.id, name: itemName, position: getTilePosition({ __position: position }) };
       state.debugSeen.push(entry);
       if (state.debugSeen.length > 50) state.debugSeen.shift();
-      console.log("[minibia-bot] magic-wall item added", entry);
+      console.log("[minibia-copilot] magic-wall item added", entry);
     }
 
     const spec = matchPatternSpec(itemName);
@@ -217,7 +217,7 @@ window.__minibiaBotBundle.installMagicWallModule = function installMagicWallModu
       try {
         handleAddItem(position, item);
       } catch (error) {
-        console.error("[minibia-bot] magic-wall addItem hook failed", error);
+        console.error("[minibia-copilot] magic-wall addItem hook failed", error);
       }
       return result;
     };
@@ -230,7 +230,7 @@ window.__minibiaBotBundle.installMagicWallModule = function installMagicWallModu
       try {
         handleRemovedTile(this, resolvedIndex);
       } catch (error) {
-        console.error("[minibia-bot] magic-wall removeItem hook failed", error);
+        console.error("[minibia-copilot] magic-wall removeItem hook failed", error);
       }
       return originalRemoveItem.call(this, index, count);
     };
@@ -439,7 +439,7 @@ window.__minibiaBotBundle.installMagicWallModule = function installMagicWallModu
       clearExpired();
       render();
     } catch (error) {
-      console.error("[minibia-bot] magic-wall render failed", error);
+      console.error("[minibia-copilot] magic-wall render failed", error);
     }
   }
 
@@ -552,10 +552,10 @@ window.__minibiaBotBundle.installMagicWallModule = function installMagicWallModu
       hooksInstalled: !!state.patches,
       timersCount: state.timers.size,
     };
-    console.log("[minibia-bot] magic-wall debugOverlay", diagnostic);
+    console.log("[minibia-copilot] magic-wall debugOverlay", diagnostic);
 
     if (!canvas || !viewport) {
-      console.warn("[minibia-bot] magic-wall debugOverlay: cannot draw test pattern", { canvas, viewport });
+      console.warn("[minibia-copilot] magic-wall debugOverlay: cannot draw test pattern", { canvas, viewport });
       return diagnostic;
     }
 
@@ -572,7 +572,7 @@ window.__minibiaBotBundle.installMagicWallModule = function installMagicWallModu
 
     const context = canvas.getContext("2d");
     if (!context) {
-      console.warn("[minibia-bot] magic-wall debugOverlay: 2d context unavailable");
+      console.warn("[minibia-copilot] magic-wall debugOverlay: 2d context unavailable");
       return diagnostic;
     }
 
@@ -588,7 +588,7 @@ window.__minibiaBotBundle.installMagicWallModule = function installMagicWallModu
     context.textBaseline = "middle";
     context.fillText("MW OVERLAY OK", width / 2, height / 2);
 
-    console.log("[minibia-bot] magic-wall debugOverlay: red rectangle drawn. If you see it on the game viewport, the overlay works; the issue is detection or projection. Call minibiaBot.magicWall.clear() to remove.");
+    console.log("[minibia-copilot] magic-wall debugOverlay: red rectangle drawn. If you see it on the game viewport, the overlay works; the issue is detection or projection. Call minibiaCopilot.magicWall.clear() to remove.");
     return diagnostic;
   }
 

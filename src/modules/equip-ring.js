@@ -1,7 +1,7 @@
-window.__minibiaBotBundle = window.__minibiaBotBundle || {};
+window.__minibiaCopilotBundle = window.__minibiaCopilotBundle || {};
 
-window.__minibiaBotBundle.installEquipRingModule = function installEquipRingModule(bot) {
-  const configStorageKey = "minibiaBot.equipRing.config";
+window.__minibiaCopilotBundle.installEquipRingModule = function installEquipRingModule(bot) {
+  const configStorageKey = "minibiaCopilot.equipRing.config";
   const RING_SLOT = 8;
   const state = {
     running: false,
