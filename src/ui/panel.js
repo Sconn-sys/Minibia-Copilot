@@ -1604,6 +1604,31 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
         padding-right: 2px;
       }
 
+      #minibia-copilot-panel #minibia-copilot-tracker-list,
+      #minibia-copilot-panel #minibia-copilot-tracker-deaths {
+        max-height: 220px;
+        overflow-y: auto;
+        padding-right: 4px;
+        scrollbar-width: thin;
+        scrollbar-color: rgba(224, 200, 148, 0.28) transparent;
+      }
+
+      #minibia-copilot-panel #minibia-copilot-tracker-list::-webkit-scrollbar,
+      #minibia-copilot-panel #minibia-copilot-tracker-deaths::-webkit-scrollbar {
+        width: 6px;
+      }
+
+      #minibia-copilot-panel #minibia-copilot-tracker-list::-webkit-scrollbar-thumb,
+      #minibia-copilot-panel #minibia-copilot-tracker-deaths::-webkit-scrollbar-thumb {
+        background: rgba(224, 200, 148, 0.22);
+        border-radius: 4px;
+      }
+
+      #minibia-copilot-panel #minibia-copilot-tracker-list::-webkit-scrollbar-thumb:hover,
+      #minibia-copilot-panel #minibia-copilot-tracker-deaths::-webkit-scrollbar-thumb:hover {
+        background: rgba(224, 200, 148, 0.38);
+      }
+
       #minibia-copilot-panel .mc-small-button {
         width: auto;
         padding: 4px 8px;
