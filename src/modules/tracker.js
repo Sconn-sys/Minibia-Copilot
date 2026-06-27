@@ -5,6 +5,7 @@ window.__minibiaCopilotBundle.installTrackerModule = function installTrackerModu
   const deathsStorageKey = "minibiaCopilot.tracker.deaths";
   const trackedStorageKey = "minibiaCopilot.tracker.tracked";
   const seenDeathsStorageKey = "minibiaCopilot.tracker.seenDeathKeys";
+  const infoStorageKey = "minibiaCopilot.tracker.info";
 
   const state = {
     running: false,
@@ -79,6 +80,48 @@ window.__minibiaCopilotBundle.installTrackerModule = function installTrackerModu
   let trackedPlayers = normalizeTrackedNames(bot.storage.get(trackedStorageKey, []));
   let recentDeaths = normalizeDeathRecords(bot.storage.get(deathsStorageKey, []));
   let seenDeathKeys = new Set(bot.storage.get(seenDeathsStorageKey, []) || []);
+
+  function normalizeInfoCache(value) {
+    const out = {};
+    if (!value || typeof value !== "object") return out;
+    Object.keys(value).forEach((key) => {
+      const entry = value[key];
+      if (!entry || typeof entry !== "object") return;
+      out[String(key).toLowerCase()] = {
+        level: Number.isFinite(Number(entry.level)) ? Number(entry.level) : null,
+        vocation: entry.vocation ? String(entry.vocation).trim() : null,
+        lastUpdatedAt: Number.isFinite(Number(entry.lastUpdatedAt)) ? Number(entry.lastUpdatedAt) : 0,
+      };
+    });
+    return out;
+  }
+
+  let characterInfoCache = normalizeInfoCache(bot.storage.get(infoStorageKey, {}));
+
+  function persistInfoCache() {
+    bot.storage.set(infoStorageKey, characterInfoCache);
+  }
+
+  function getPlayerInfo(name) {
+    return characterInfoCache[normalizeKey(name)] || null;
+  }
+
+  function updatePlayerInfo(name, level, vocation, now = Date.now()) {
+    const key = normalizeKey(name);
+    if (!key) return;
+    const current = characterInfoCache[key] || { level: null, vocation: null, lastUpdatedAt: 0 };
+    const next = {
+      level: Number.isFinite(Number(level)) ? Number(level) : current.level,
+      vocation: vocation ? String(vocation).trim() : current.vocation,
+      lastUpdatedAt: now,
+    };
+    if (next.level === current.level && next.vocation === current.vocation) {
+      current.lastUpdatedAt = now;
+      return;
+    }
+    characterInfoCache[key] = next;
+    persistInfoCache();
+  }
 
   function getPlayerCategory(name) {
     const key = normalizeKey(name);
@@ -257,6 +300,49 @@ window.__minibiaCopilotBundle.installTrackerModule = function installTrackerModu
     return new Set();
   }
 
+  function extractCharacterInfoFromJson(json) {
+    if (!json || typeof json !== "object") return { level: null, vocation: null };
+    const candidates = [json, json.character, json.player, json.data, json.profile].filter(Boolean);
+    let level = null;
+    let vocation = null;
+    for (const candidate of candidates) {
+      if (level == null) {
+        const lvl = candidate.level ?? candidate.lvl ?? candidate.lvlValue ?? candidate.experienceLevel;
+        if (lvl != null && Number.isFinite(Number(lvl))) level = Number(lvl);
+      }
+      if (vocation == null) {
+        const voc = candidate.vocation ?? candidate.vocationName ?? candidate.class ?? candidate.profession ?? candidate.job;
+        if (voc) vocation = String(voc).trim();
+      }
+      if (level != null && vocation) break;
+    }
+    return { level, vocation };
+  }
+
+  function extractCharacterInfoFromHtml(doc) {
+    if (!doc) return { level: null, vocation: null };
+    const text = (doc.body?.textContent || "").replace(/\s+/g, " ").trim();
+    let level = null;
+    let vocation = null;
+
+    const levelMatch = text.match(/level\s*[:\-]?\s*(\d{1,4})/i);
+    if (levelMatch) level = Number(levelMatch[1]);
+
+    const vocationMatch = text.match(
+      /vocation\s*[:\-]?\s*([A-Za-z][A-Za-z\s]{2,40}?)(?=\s+(?:level|world|residence|sex|gender|guild|last|account|profile|character|email|created|residence|status|premium|points|deaths|achievements|\d|$))/i
+    );
+    if (vocationMatch) {
+      vocation = vocationMatch[1].trim().replace(/\s+/g, " ").replace(/[.,;:]+$/, "");
+    }
+
+    if (!vocation) {
+      const tableMatch = text.match(/vocation\s+([A-Za-z][A-Za-z\s]{2,40})/i);
+      if (tableMatch) vocation = tableMatch[1].trim().replace(/\s+/g, " ").replace(/[.,;:]+$/, "");
+    }
+
+    return { level, vocation };
+  }
+
   function extractCharacterDeathsFromJson(json, name) {
     if (!json) return [];
     const out = [];
@@ -355,15 +441,20 @@ window.__minibiaCopilotBundle.installTrackerModule = function installTrackerModu
   }
 
   async function fetchCharacterDeaths(name) {
+    let deaths = [];
+    let info = null;
+
     try {
       const apiResult = await fetchAny(buildCharacterApiUrl(name));
       if (apiResult.json) {
+        info = extractCharacterInfoFromJson(apiResult.json);
         const fromJson = extractCharacterDeathsFromJson(apiResult.json, name);
-        if (fromJson.length) return fromJson;
-      }
-      if (apiResult.text && !apiResult.json) {
-        const fromHtml = extractCharacterDeaths(parseHtml(apiResult.text), name);
-        if (fromHtml.length) return fromHtml;
+        if (fromJson.length) deaths = fromJson;
+      } else if (apiResult.text) {
+        const doc = parseHtml(apiResult.text);
+        info = extractCharacterInfoFromHtml(doc);
+        const fromHtml = extractCharacterDeaths(doc, name);
+        if (fromHtml.length) deaths = fromHtml;
       }
     } catch (error) {
       bot.log("tracker: character api fetch failed, falling back to page", {
@@ -372,20 +463,37 @@ window.__minibiaCopilotBundle.installTrackerModule = function installTrackerModu
       });
     }
 
-    try {
-      const pageResult = await fetchAny(buildCharacterPageUrl(name));
-      if (pageResult.json) {
-        const fromJson = extractCharacterDeathsFromJson(pageResult.json, name);
-        if (fromJson.length) return fromJson;
+    if (!deaths.length || !info || (info.level == null && !info.vocation)) {
+      try {
+        const pageResult = await fetchAny(buildCharacterPageUrl(name));
+        let pageInfo = null;
+        let pageDeaths = [];
+        if (pageResult.json) {
+          pageInfo = extractCharacterInfoFromJson(pageResult.json);
+          pageDeaths = extractCharacterDeathsFromJson(pageResult.json, name);
+        } else if (pageResult.text) {
+          const doc = parseHtml(pageResult.text);
+          pageInfo = extractCharacterInfoFromHtml(doc);
+          pageDeaths = extractCharacterDeaths(doc, name);
+        }
+        if (!info) info = pageInfo;
+        else {
+          if (info.level == null && pageInfo?.level != null) info.level = pageInfo.level;
+          if (!info.vocation && pageInfo?.vocation) info.vocation = pageInfo.vocation;
+        }
+        if (!deaths.length && pageDeaths.length) deaths = pageDeaths;
+      } catch (error) {
+        bot.log("tracker: character page fetch failed", {
+          name,
+          error: error?.message || String(error),
+        });
       }
-      return extractCharacterDeaths(parseHtml(pageResult.text), name);
-    } catch (error) {
-      bot.log("tracker: character page fetch failed", {
-        name,
-        error: error?.message || String(error),
-      });
-      return [];
     }
+
+    if (info && (info.level != null || info.vocation)) {
+      updatePlayerInfo(name, info.level, info.vocation);
+    }
+    return deaths;
   }
 
   async function pollOnce(now = Date.now()) {
@@ -589,17 +697,32 @@ window.__minibiaCopilotBundle.installTrackerModule = function installTrackerModu
       .sort((a, b) => b.at - a.at);
   }
 
+  function annotatePlayers(players) {
+    return players.map((p) => {
+      const info = getPlayerInfo(p.name);
+      return {
+        name: p.name,
+        category: p.category,
+        level: info?.level ?? null,
+        vocation: info?.vocation ?? null,
+        infoUpdatedAt: info?.lastUpdatedAt || 0,
+      };
+    });
+  }
+
   function status() {
     const allNames = getTrackedNamesArray();
-    const enemyNames = trackedPlayers.filter((p) => p.category === "enemy").map((p) => p.name);
-    const friendlyNames = trackedPlayers.filter((p) => p.category === "friendly").map((p) => p.name);
+    const enemyPlayers = trackedPlayers.filter((p) => p.category === "enemy");
+    const friendlyPlayers = trackedPlayers.filter((p) => p.category === "friendly");
     return {
       running: state.running,
       config: { ...config },
       tracked: allNames,
       trackedPlayers: trackedPlayers.map((p) => ({ ...p })),
-      enemy: enemyNames,
-      friendly: friendlyNames,
+      enemy: enemyPlayers.map((p) => p.name),
+      friendly: friendlyPlayers.map((p) => p.name),
+      enemyDetails: annotatePlayers(enemyPlayers),
+      friendlyDetails: annotatePlayers(friendlyPlayers),
       online: allNames.filter((n) => isOnline(n)),
       offline: allNames.filter((n) => !isOnline(n)),
       enemyDeaths: getRecentDeaths("enemy"),
@@ -693,6 +816,7 @@ window.__minibiaCopilotBundle.installTrackerModule = function installTrackerModu
     getTrackedNames,
     getTrackedPlayers: () => trackedPlayers.map((p) => ({ ...p })),
     getPlayerCategory,
+    getPlayerInfo,
     isOnline,
     getRecentDeaths,
     pollOnce: () => pollOnce(),

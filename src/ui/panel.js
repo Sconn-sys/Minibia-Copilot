@@ -578,7 +578,7 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
     }
 
     const isEnemyTab = activeTrackerSubtab === "enemy";
-    const sectionNames = isEnemyTab ? (status.enemy || []) : (status.friendly || []);
+    const sectionDetails = isEnemyTab ? (status.enemyDetails || []) : (status.friendlyDetails || []);
     const sectionDeaths = isEnemyTab ? (status.enemyDeaths || []) : (status.friendlyDeaths || []);
     const oppositeCategoryLabel = isEnemyTab ? "Friendly" : "Enemy";
 
@@ -592,16 +592,24 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
     }
 
     if (list) {
-      if (!sectionNames.length) {
+      if (!sectionDetails.length) {
         list.innerHTML = `<div class="mc-small-note">No ${isEnemyTab ? "enemies" : "friendlies"} tracked yet. Add a name above.</div>`;
       } else {
-        list.innerHTML = sectionNames.map((name) => {
+        list.innerHTML = sectionDetails.map((player) => {
+          const name = player.name;
           const online = status.online.includes(name);
+          const levelPart = player.level != null ? `lvl ${escapeHtml(player.level)}` : "";
+          const vocationPart = player.vocation ? escapeHtml(player.vocation) : "";
+          const metaParts = [levelPart, vocationPart].filter(Boolean);
+          const metaText = metaParts.length ? `<span class="mc-tracked-meta">${metaParts.join(" · ")}</span>` : "";
           return (
             `<div class="mc-tracked-row" data-name="${escapeHtml(name)}">` +
               `<span class="mc-tracked-name">` +
                 `<span class="mc-tracked-dot" data-online="${online ? "true" : "false"}"></span>` +
-                `<span>${escapeHtml(name)}</span>` +
+                `<span class="mc-tracked-name-text">` +
+                  `<span>${escapeHtml(name)}</span>` +
+                  metaText +
+                `</span>` +
               `</span>` +
               `<span class="mc-tracked-actions">` +
                 `<button type="button" class="mc-small-button" data-tracker-swap="${escapeHtml(name)}" title="Move to ${oppositeCategoryLabel}">⇄</button>` +
@@ -1333,6 +1341,19 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
         color: #ffcf5a;
         border-color: rgba(255, 207, 90, 0.45);
         background: rgba(255, 207, 90, 0.1);
+      }
+
+      #minibia-copilot-panel .mc-tracked-name-text {
+        display: flex;
+        flex-direction: column;
+        line-height: 1.1;
+      }
+
+      #minibia-copilot-panel .mc-tracked-meta {
+        color: #8c7a52;
+        font-size: 10px;
+        letter-spacing: 0.02em;
+        margin-top: 2px;
       }
 
       #minibia-copilot-panel .mc-tracked-actions {
