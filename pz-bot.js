@@ -3504,6 +3504,17 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
     /\bgravel pile\b/i,
     /\bdirt pile\b/i,
   ];
+  const validWaypointActions = new Set([
+    "node",
+    "stand",
+    "walk",
+    "rope",
+    "ladder",
+    "shovel",
+    "use",
+    "label",
+  ]);
+  const defaultWaypointAction = "node";
   const state = {
     running: false,
     timerId: null,
@@ -3709,8 +3720,20 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
     };
   }
 
+  function normalizeWaypointAction(value) {
+    const normalized = String(value || "").trim().toLowerCase();
+    if (!normalized) return defaultWaypointAction;
+    return validWaypointActions.has(normalized) ? normalized : defaultWaypointAction;
+  }
+
   function normalizeWaypoint(waypoint) {
-    return normalizePosition(waypoint);
+    const position = normalizePosition(waypoint);
+    if (!position) return null;
+    const action = normalizeWaypointAction(waypoint?.action);
+    const labelText = String(waypoint?.label || "").trim();
+    const result = { ...position, action };
+    if (labelText) result.label = labelText;
+    return result;
   }
 
   function normalizeRoute(value) {
@@ -4450,13 +4473,25 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
     return best;
   }
 
+  function getWaypointTolerance(waypoint) {
+    const action = waypoint?.action || defaultWaypointAction;
+    const baseTolerance = Math.max(0, Number(config.waypointTolerance) || 0);
+    if (action === "node") {
+      return Math.max(baseTolerance, 2);
+    }
+    if (action === "walk") {
+      return Math.max(baseTolerance, 1);
+    }
+    return baseTolerance;
+  }
+
   function isAtWaypoint(position, waypoint) {
     const distance = getDistanceToWaypoint(position, waypoint);
     if (!Number.isFinite(distance)) {
       return false;
     }
 
-    return distance <= Math.max(0, Number(config.waypointTolerance) || 0);
+    return distance <= getWaypointTolerance(waypoint);
   }
 
   function goToWaypoint(waypoint) {
@@ -4758,6 +4793,86 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
     return true;
   }
 
+  function useTileDirect(targetTile, targetPosition, actionLabel, now = Date.now()) {
+    if (!targetTile || !targetPosition) return false;
+    const playerPosition = normalizePosition(bot.getPlayerPosition());
+    if (!playerPosition) return false;
+
+    if (!isAdjacentTile(playerPosition, targetPosition) && !isSameTile(playerPosition, targetPosition)) {
+      const adjacentPosition = findAdjacentWalkablePosition(targetPosition, playerPosition);
+      if (adjacentPosition) {
+        return goToPosition(adjacentPosition);
+      }
+      return false;
+    }
+
+    window.gameClient?.mouse?.use?.({ which: targetTile, index: 0xFF });
+    state.lastStairsUseAt = now;
+    state.lastPathAt = now;
+    markPendingTransitionSource(targetPosition);
+    bot.log(actionLabel, { source: targetPosition });
+    return true;
+  }
+
+  function handleActionWaypoint(waypoint, position, now = Date.now()) {
+    const action = waypoint?.action || defaultWaypointAction;
+
+    if (action === "label") {
+      advanceWaypoint();
+      return true;
+    }
+
+    if (action !== "rope" && action !== "ladder" && action !== "shovel" && action !== "use") {
+      return false;
+    }
+
+    if (now - state.lastStairsUseAt < 1200) {
+      return true;
+    }
+
+    const targetPosition = { x: waypoint.x, y: waypoint.y, z: waypoint.z };
+    const targetTile = getTileAt(targetPosition);
+    if (!targetTile) {
+      const adjacentPosition = findAdjacentWalkablePosition(targetPosition, position);
+      if (adjacentPosition) {
+        return goToPosition(adjacentPosition);
+      }
+      return false;
+    }
+
+    if (action === "rope") {
+      const rope = findRopeSource();
+      if (!rope) {
+        bot.log("cave waypoint needs rope but none found", { waypoint });
+        return false;
+      }
+      return useToolOnTile(rope, targetTile, targetPosition, "cave waypoint rope", now);
+    }
+
+    if (action === "shovel") {
+      const shovel = findShovelSource();
+      if (!shovel) {
+        bot.log("cave waypoint needs shovel but none found", { waypoint });
+        return false;
+      }
+      return useToolOnTile(shovel, targetTile, targetPosition, "cave waypoint shovel", now);
+    }
+
+    if (action === "ladder") {
+      return useTileDirect(targetTile, targetPosition, "cave waypoint ladder", now);
+    }
+
+    if (action === "use") {
+      const fired = useTileDirect(targetTile, targetPosition, "cave waypoint use", now);
+      if (fired) {
+        advanceWaypoint();
+      }
+      return fired;
+    }
+
+    return false;
+  }
+
   function handleFloorChange(waypoint, now = Date.now()) {
     const position = normalizePosition(bot.getPlayerPosition());
     if (!position || !waypoint || position.z === waypoint.z) {
@@ -4891,12 +5006,31 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
         return;
       }
 
-      if (isAtWaypoint(position, waypoint)) {
+      const action = waypoint.action || defaultWaypointAction;
+      const isFloorAction = action === "rope" || action === "ladder" || action === "shovel";
+      const isPointAction = action === "use" || action === "label";
+
+      if (isFloorAction && position && position.z === waypoint.z) {
         waypoint = advanceWaypoint();
+        if (!waypoint) return;
+      } else if (isAtWaypoint(position, waypoint) && !isFloorAction && !isPointAction) {
+        waypoint = advanceWaypoint();
+        if (!waypoint) return;
       }
 
-      if (!waypoint) {
-        return;
+      const currentAction = waypoint.action || defaultWaypointAction;
+      const isAnyAction =
+        currentAction === "rope" ||
+        currentAction === "ladder" ||
+        currentAction === "shovel" ||
+        currentAction === "use" ||
+        currentAction === "label";
+
+      if (isAnyAction) {
+        const handled = handleActionWaypoint(waypoint, position, now);
+        if (handled) {
+          return;
+        }
       }
 
       if (position && waypoint.z !== position.z) {
@@ -5008,14 +5142,61 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
     return cloneValue(normalized);
   }
 
-  function addWaypointCurrentSpot() {
+  function addWaypointCurrentSpot(action = defaultWaypointAction, label = null) {
     const position = normalizePosition(bot.getPlayerPosition());
     if (!position) {
       bot.log("could not read current position for cave waypoint");
       return null;
     }
 
-    return addWaypoint(position);
+    const waypoint = { ...position, action };
+    if (label) waypoint.label = label;
+    return addWaypoint(waypoint);
+  }
+
+  function addRopeWaypointCurrentSpot() {
+    return addWaypointCurrentSpot("rope");
+  }
+
+  function addLadderWaypointCurrentSpot() {
+    return addWaypointCurrentSpot("ladder");
+  }
+
+  function addShovelWaypointCurrentSpot() {
+    return addWaypointCurrentSpot("shovel");
+  }
+
+  function addUseWaypointCurrentSpot() {
+    return addWaypointCurrentSpot("use");
+  }
+
+  function addStandWaypointCurrentSpot() {
+    return addWaypointCurrentSpot("stand");
+  }
+
+  function addLabelWaypoint(label) {
+    const position = normalizePosition(bot.getPlayerPosition());
+    if (!position) {
+      bot.log("could not read current position for label waypoint");
+      return null;
+    }
+
+    return addWaypoint({ ...position, action: "label", label });
+  }
+
+  function setWaypointAction(index, action, label = null) {
+    if (!route.length || index < 0 || index >= route.length) {
+      return null;
+    }
+
+    const current = route[index];
+    const next = normalizeWaypoint({ ...current, action, label: label ?? current.label });
+    if (!next) return null;
+
+    route[index] = next;
+    persistRoute();
+    bot.log("cave waypoint action updated", { index, ...next });
+    return cloneValue(next);
   }
 
   function clearWaypoints() {
@@ -5134,6 +5315,14 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
     deletePreset,
     addWaypoint,
     addWaypointCurrentSpot,
+    addRopeWaypointCurrentSpot,
+    addLadderWaypointCurrentSpot,
+    addShovelWaypointCurrentSpot,
+    addUseWaypointCurrentSpot,
+    addStandWaypointCurrentSpot,
+    addLabelWaypoint,
+    setWaypointAction,
+    waypointActions: Array.from(validWaypointActions),
     clearWaypoints,
     clearTransitions,
     removeLastWaypoint,
@@ -6343,6 +6532,470 @@ window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
 };
 window.__minibiaBotBundle = window.__minibiaBotBundle || {};
 
+window.__minibiaBotBundle.installMagicWallModule = function installMagicWallModule(bot) {
+  const configStorageKey = "minibiaBot.magicWall.config";
+  const overlayRootId = "minibia-bot-magic-wall-overlay";
+  const overlayStyleId = "minibia-bot-magic-wall-overlay-style";
+
+  const defaultPatternSpecs = [
+    { name: "magic wall", durationMs: 20000, color: "#7ec8ff" },
+    { name: "wild growth", durationMs: 30000, color: "#9be38c" },
+  ];
+
+  const state = {
+    enabled: false,
+    rafId: null,
+    overlayTimerId: null,
+    timers: new Map(),
+    patches: null,
+    alarmedFor: new Set(),
+  };
+
+  const config = Object.assign(
+    {
+      enabled: false,
+      patternSpecs: defaultPatternSpecs.map((spec) => ({ ...spec })),
+      audioOnExpiry: false,
+      audioLeadMs: 3000,
+      flashLeadMs: 3000,
+      showFloorChanges: false,
+    },
+    bot.storage.get(configStorageKey, {})
+  );
+
+  if (!Array.isArray(config.patternSpecs) || !config.patternSpecs.length) {
+    config.patternSpecs = defaultPatternSpecs.map((spec) => ({ ...spec }));
+  }
+
+  function persistConfig() {
+    bot.storage.set(configStorageKey, { ...config });
+  }
+
+  function normalizeItemName(value) {
+    return String(value || "").trim().toLowerCase();
+  }
+
+  function getItemName(item) {
+    if (!item) return "";
+    const defs =
+      window.gameClient?.itemDefinitionsByCid ||
+      window.gameClient?.itemDefinitions ||
+      null;
+    const def = defs ? defs[item.id] : null;
+    return normalizeItemName(def?.properties?.name || item?.name);
+  }
+
+  function matchPatternSpec(itemName) {
+    if (!itemName) return null;
+    for (const spec of config.patternSpecs) {
+      const needle = normalizeItemName(spec?.name);
+      if (needle && itemName.includes(needle)) {
+        return spec;
+      }
+    }
+    return null;
+  }
+
+  function getTilePosition(tile) {
+    const candidate =
+      tile?.__position ||
+      tile?.position ||
+      (typeof tile?.getPosition === "function" ? tile.getPosition() : null);
+    if (!candidate) return null;
+    const x = Number(candidate.x);
+    const y = Number(candidate.y);
+    const z = Number(candidate.z);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+      return null;
+    }
+    return { x: Math.trunc(x), y: Math.trunc(y), z: Math.trunc(z) };
+  }
+
+  function positionKey(position) {
+    return position ? `${position.x},${position.y},${position.z}` : null;
+  }
+
+  function recordTimer(position, item, spec, now = Date.now()) {
+    const key = positionKey(position);
+    if (!key || !spec) return;
+
+    const existing = state.timers.get(key);
+    const durationMs = Math.max(1000, Math.trunc(Number(spec.durationMs) || 20000));
+    if (existing && existing.expiresAt > now) {
+      existing.expiresAt = now + durationMs;
+      existing.spec = spec;
+      existing.itemId = item?.id ?? existing.itemId;
+      return;
+    }
+
+    state.timers.set(key, {
+      position,
+      itemId: item?.id ?? null,
+      itemName: getItemName(item),
+      spec,
+      startedAt: now,
+      expiresAt: now + durationMs,
+    });
+    state.alarmedFor.delete(key);
+  }
+
+  function clearExpired(now = Date.now()) {
+    for (const [key, entry] of state.timers) {
+      if (entry.expiresAt <= now) {
+        state.timers.delete(key);
+        state.alarmedFor.delete(key);
+      }
+    }
+  }
+
+  function handleAddItem(position, item) {
+    if (!config.enabled || !position || !item) return;
+    const itemName = getItemName(item);
+    const spec = matchPatternSpec(itemName);
+    if (!spec) return;
+    const normalized = getTilePosition({ __position: position });
+    if (!normalized) return;
+    recordTimer(normalized, item, spec);
+  }
+
+  function handleRemovedTile(tile, index) {
+    if (!state.timers.size) return;
+    const tilePosition = getTilePosition(tile);
+    const key = positionKey(tilePosition);
+    if (!key || !state.timers.has(key)) return;
+    const items = Array.isArray(tile?.items) ? tile.items : [];
+    const remaining = items.filter((_, itemIndex) => itemIndex !== index);
+    const stillThere = remaining.some((item) => !!matchPatternSpec(getItemName(item)));
+    if (!stillThere) {
+      state.timers.delete(key);
+      state.alarmedFor.delete(key);
+    }
+  }
+
+  function installPatches() {
+    if (state.patches) return;
+
+    const World = window.World?.prototype;
+    const Tile = window.Tile?.prototype;
+    if (!World || !Tile) {
+      bot.log("magic wall: cannot install hooks, World/Tile prototypes unavailable");
+      return;
+    }
+
+    const originalAddItem = World.addItem;
+    const originalRemoveItem = Tile.removeItem;
+
+    World.addItem = function patchedAddItem(position, item, slot) {
+      const result = originalAddItem.call(this, position, item, slot);
+      try {
+        handleAddItem(position, item);
+      } catch (error) {
+        console.error("[minibia-bot] magic-wall addItem hook failed", error);
+      }
+      return result;
+    };
+
+    Tile.removeItem = function patchedRemoveItem(index, count) {
+      let resolvedIndex = index;
+      if (resolvedIndex === 0xFF) {
+        resolvedIndex = Array.isArray(this.items) ? this.items.length - 1 : -1;
+      }
+      try {
+        handleRemovedTile(this, resolvedIndex);
+      } catch (error) {
+        console.error("[minibia-bot] magic-wall removeItem hook failed", error);
+      }
+      return originalRemoveItem.call(this, index, count);
+    };
+
+    state.patches = { World, originalAddItem, Tile, originalRemoveItem };
+  }
+
+  function uninstallPatches() {
+    if (!state.patches) return;
+    const { World, originalAddItem, Tile, originalRemoveItem } = state.patches;
+    if (World.addItem !== originalAddItem) World.addItem = originalAddItem;
+    if (Tile.removeItem !== originalRemoveItem) Tile.removeItem = originalRemoveItem;
+    state.patches = null;
+  }
+
+  function ensureOverlayStyle() {
+    if (document.getElementById(overlayStyleId)) return;
+    const style = document.createElement("style");
+    style.id = overlayStyleId;
+    style.textContent = `
+      #${overlayRootId} {
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        z-index: 999996;
+      }
+      #${overlayRootId} canvas {
+        position: fixed;
+        pointer-events: none;
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  function ensureOverlayRoot() {
+    let root = document.getElementById(overlayRootId);
+    if (root) return root;
+    root = document.createElement("div");
+    root.id = overlayRootId;
+    root.innerHTML = '<canvas></canvas>';
+    document.body.appendChild(root);
+    return root;
+  }
+
+  function destroyOverlay() {
+    document.getElementById(overlayRootId)?.remove();
+    document.getElementById(overlayStyleId)?.remove();
+  }
+
+  function getGameViewport() {
+    const canvas = window.gameClient?.renderer?.screen?.canvas;
+    if (!(canvas instanceof HTMLCanvasElement)) return null;
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    return { canvas, rect };
+  }
+
+  function getScalingVector() {
+    const scaling = window.gameClient?.interface?.getSpriteScalingVector?.();
+    if (scaling && Number.isFinite(scaling.x) && Number.isFinite(scaling.y) && scaling.x > 0 && scaling.y > 0) {
+      return { x: scaling.x, y: scaling.y };
+    }
+    return { x: 32, y: 32 };
+  }
+
+  function getPlayerMoveOffset() {
+    const offset = window.gameClient?.player?.getMoveOffset?.();
+    if (offset && Number.isFinite(offset.x) && Number.isFinite(offset.y)) {
+      return { x: offset.x, y: offset.y };
+    }
+    return { x: 0, y: 0 };
+  }
+
+  function worldToCanvasTile(position, playerPosition, moveOffset) {
+    const tileX = 7 + moveOffset.x + (position.x - playerPosition.x);
+    const tileY = 5 + moveOffset.y + (position.y - playerPosition.y);
+    return { tileX, tileY };
+  }
+
+  function render() {
+    const root = ensureOverlayRoot();
+    const canvas = root.querySelector("canvas");
+    if (!(canvas instanceof HTMLCanvasElement)) return;
+
+    const viewport = getGameViewport();
+    const playerPosition = window.gameClient?.player?.getPosition?.();
+
+    if (!viewport || !playerPosition || !state.timers.size) {
+      if (canvas.width !== 0) {
+        canvas.width = 0;
+        canvas.height = 0;
+      }
+      return;
+    }
+
+    const rect = viewport.rect;
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    const width = Math.max(1, Math.round(rect.width));
+    const height = Math.max(1, Math.round(rect.height));
+    const pixelWidth = Math.round(width * dpr);
+    const pixelHeight = Math.round(height * dpr);
+
+    if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+      canvas.width = pixelWidth;
+      canvas.height = pixelHeight;
+    }
+
+    canvas.style.left = `${Math.round(rect.left)}px`;
+    canvas.style.top = `${Math.round(rect.top)}px`;
+    canvas.style.width = `${width}px`;
+    canvas.style.height = `${height}px`;
+
+    const context = canvas.getContext("2d");
+    if (!context) return;
+
+    context.setTransform(dpr, 0, 0, dpr, 0, 0);
+    context.clearRect(0, 0, width, height);
+
+    const internalWidth = Number(viewport.canvas.width) || 480;
+    const internalHeight = Number(viewport.canvas.height) || 352;
+    const scaling = getScalingVector();
+    const moveOffset = getPlayerMoveOffset();
+    const tilePixelWidth = scaling.x;
+    const tilePixelHeight = scaling.y;
+    const renderScaleX = width / internalWidth;
+    const renderScaleY = height / internalHeight;
+    const now = Date.now();
+
+    context.save();
+    context.font = "bold 14px Verdana, sans-serif";
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.lineWidth = 3;
+
+    for (const entry of state.timers.values()) {
+      if (entry.position.z !== playerPosition.z && !config.showFloorChanges) continue;
+
+      const { tileX, tileY } = worldToCanvasTile(entry.position, playerPosition, moveOffset);
+      if (tileX < -1 || tileX > 16 || tileY < -1 || tileY > 12) continue;
+
+      const internalCenterX = (tileX + 0.5) * tilePixelWidth;
+      const internalCenterY = (tileY + 0.5) * tilePixelHeight;
+      const cx = internalCenterX * renderScaleX;
+      const cy = internalCenterY * renderScaleY;
+      const remainingMs = Math.max(0, entry.expiresAt - now);
+      const secondsLeft = Math.ceil(remainingMs / 1000);
+      const isExpiring = remainingMs <= Math.max(0, Number(config.flashLeadMs) || 0);
+      const flashOn = isExpiring && Math.floor(now / 250) % 2 === 0;
+      const color = isExpiring && flashOn ? "#ff4d4d" : (entry.spec?.color || "#7ec8ff");
+
+      const radius = 16 * Math.min(renderScaleX, renderScaleY);
+      context.beginPath();
+      context.arc(cx, cy, radius, 0, Math.PI * 2);
+      context.fillStyle = "rgba(0, 0, 0, 0.55)";
+      context.fill();
+      context.strokeStyle = color;
+      context.stroke();
+
+      context.fillStyle = color;
+      context.fillText(String(secondsLeft), cx, cy);
+    }
+
+    context.restore();
+
+    if (config.audioOnExpiry && Number.isFinite(config.audioLeadMs)) {
+      for (const [key, entry] of state.timers) {
+        const lead = Math.max(0, Number(config.audioLeadMs) || 0);
+        if (entry.expiresAt - now <= lead && !state.alarmedFor.has(key)) {
+          state.alarmedFor.add(key);
+          bot.playAlarm?.();
+        }
+      }
+    }
+  }
+
+  function tickOverlay() {
+    try {
+      clearExpired();
+      render();
+    } catch (error) {
+      console.error("[minibia-bot] magic-wall render failed", error);
+    }
+  }
+
+  function startOverlay() {
+    if (state.overlayTimerId != null) return;
+    ensureOverlayStyle();
+    tickOverlay();
+    state.overlayTimerId = window.setInterval(tickOverlay, 200);
+  }
+
+  function stopOverlay() {
+    if (state.overlayTimerId != null) {
+      window.clearInterval(state.overlayTimerId);
+      state.overlayTimerId = null;
+    }
+    destroyOverlay();
+  }
+
+  function start(overrides = {}) {
+    Object.assign(config, overrides, { enabled: true });
+    persistConfig();
+    if (state.enabled) {
+      bot.log("magic wall timer already running");
+      return false;
+    }
+    state.enabled = true;
+    installPatches();
+    startOverlay();
+    bot.log("magic wall timer started", { patternSpecs: config.patternSpecs });
+    return true;
+  }
+
+  function stop(options = {}) {
+    const persistEnabled = options.persistEnabled !== false;
+    state.enabled = false;
+    stopOverlay();
+    uninstallPatches();
+    state.timers.clear();
+    state.alarmedFor.clear();
+    if (persistEnabled) {
+      config.enabled = false;
+      persistConfig();
+    }
+    bot.log("magic wall timer stopped");
+    return true;
+  }
+
+  function clear() {
+    state.timers.clear();
+    state.alarmedFor.clear();
+    return true;
+  }
+
+  function list() {
+    const now = Date.now();
+    return Array.from(state.timers.values()).map((entry) => ({
+      position: { ...entry.position },
+      itemId: entry.itemId,
+      itemName: entry.itemName,
+      remainingMs: Math.max(0, entry.expiresAt - now),
+      expiresAt: entry.expiresAt,
+      durationMs: entry.expiresAt - entry.startedAt,
+      spec: entry.spec ? { ...entry.spec } : null,
+    }));
+  }
+
+  function status() {
+    return {
+      running: state.enabled,
+      config: { ...config },
+      timers: list(),
+    };
+  }
+
+  function updateConfig(nextConfig = {}) {
+    if (Array.isArray(nextConfig.patternSpecs)) {
+      nextConfig.patternSpecs = nextConfig.patternSpecs
+        .map((spec) => spec && typeof spec === "object" ? { ...spec } : null)
+        .filter(Boolean);
+      if (!nextConfig.patternSpecs.length) {
+        delete nextConfig.patternSpecs;
+      }
+    }
+    Object.assign(config, nextConfig);
+    persistConfig();
+    bot.log("magic wall config updated", { ...config });
+    return { ...config };
+  }
+
+  bot.addCleanup(() => {
+    stopOverlay();
+    uninstallPatches();
+    state.timers.clear();
+  });
+
+  if (config.enabled) {
+    start();
+  }
+
+  bot.magicWall = {
+    start,
+    stop,
+    status,
+    list,
+    clear,
+    updateConfig,
+    config,
+  };
+};
+window.__minibiaBotBundle = window.__minibiaBotBundle || {};
+
 window.__minibiaBotBundle.installPanel = function installPanel(bot) {
   const panelPositionKey = "minibiaBot.ui.panelPosition";
   const panelCollapsedKey = "minibiaBot.ui.panelCollapsed";
@@ -6712,6 +7365,43 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     if (!equipRingToggle) return;
 
     equipRingToggle.checked = !!bot.equipRing?.status?.().running;
+  }
+
+  function refreshMagicWallStatus() {
+    const enabledInput = document.getElementById("minibia-bot-magic-wall-enabled");
+    const audioInput = document.getElementById("minibia-bot-magic-wall-audio");
+    const durationInput = document.getElementById("minibia-bot-magic-wall-duration");
+    const leadInput = document.getElementById("minibia-bot-magic-wall-lead");
+    const statusLabel = document.getElementById("minibia-bot-magic-wall-status");
+    const status = bot.magicWall?.status?.();
+
+    if (enabledInput) {
+      enabledInput.checked = !!status?.running;
+    }
+    if (audioInput) {
+      audioInput.checked = !!status?.config?.audioOnExpiry;
+    }
+    if (durationInput && document.activeElement !== durationInput) {
+      const primary = status?.config?.patternSpecs?.find((spec) =>
+        String(spec?.name || "").toLowerCase().includes("magic wall")
+      );
+      const seconds = primary ? Math.round((Number(primary.durationMs) || 20000) / 1000) : 20;
+      durationInput.value = String(seconds);
+    }
+    if (leadInput && document.activeElement !== leadInput) {
+      const lead = Math.round((Number(status?.config?.flashLeadMs) || 3000) / 1000);
+      leadInput.value = String(lead);
+    }
+    if (statusLabel) {
+      const activeCount = Array.isArray(status?.timers) ? status.timers.length : 0;
+      if (!status?.running) {
+        statusLabel.textContent = "Status: idle";
+      } else if (activeCount === 0) {
+        statusLabel.textContent = "Status: watching";
+      } else {
+        statusLabel.textContent = `Status: ${activeCount} active`;
+      }
+    }
   }
 
   function refreshTalkStatus() {
@@ -7387,8 +8077,17 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
                 <button type="button" class="mb-small-button" id="minibia-bot-cave-preset-delete">Delete</button>
               </div>
               <div class="mb-actions mb-actions-inline-two">
-                <button type="button" class="mb-small-button" id="minibia-bot-cave-record">Record Spot</button>
+                <button type="button" class="mb-small-button" id="minibia-bot-cave-record">Record Node</button>
                 <button type="button" class="mb-small-button" id="minibia-bot-cave-remove-last">Remove Last</button>
+              </div>
+              <div class="mb-actions mb-actions-inline-three">
+                <button type="button" class="mb-small-button" id="minibia-bot-cave-record-rope">+ Rope</button>
+                <button type="button" class="mb-small-button" id="minibia-bot-cave-record-ladder">+ Ladder</button>
+                <button type="button" class="mb-small-button" id="minibia-bot-cave-record-shovel">+ Shovel</button>
+              </div>
+              <div class="mb-actions mb-actions-inline-two">
+                <button type="button" class="mb-small-button" id="minibia-bot-cave-record-use">+ Use Tile</button>
+                <button type="button" class="mb-small-button" id="minibia-bot-cave-record-stand">+ Stand</button>
               </div>
               <div class="mb-small-note" id="minibia-bot-cave-closest">Closest start: no waypoints</div>
               <div class="mb-small-note" id="minibia-bot-cave-transition-status">Transitions learned: none</div>
@@ -7419,6 +8118,28 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
                 <input type="number" id="minibia-bot-auto-attack-rune-hotkey" min="1" max="12" placeholder="4" />
               </label>
               <div class="mb-small-note">Melee mode uses the target hotkey, then walks adjacent to the target. Non-melee mode uses the target hotkey to acquire a target and the rune hotkey to cast on that target.</div>
+            </div>
+          </div>
+          <div class="mb-section mb-column-section">
+            <div class="mb-label">Magic Wall Timer</div>
+            <div class="mb-stack">
+              <label class="mb-toggle">
+                <input type="checkbox" id="minibia-bot-magic-wall-enabled" />
+                <span>Show on-screen MW timer</span>
+              </label>
+              <label class="mb-toggle">
+                <input type="checkbox" id="minibia-bot-magic-wall-audio" />
+                <span>Alarm at lead time</span>
+              </label>
+              <label class="mb-field" for="minibia-bot-magic-wall-duration">
+                <span class="mb-field-label">Duration (s)</span>
+                <input type="number" id="minibia-bot-magic-wall-duration" min="1" max="120" placeholder="20" />
+              </label>
+              <label class="mb-field" for="minibia-bot-magic-wall-lead">
+                <span class="mb-field-label">Flash/alarm lead (s)</span>
+                <input type="number" id="minibia-bot-magic-wall-lead" min="0" max="20" placeholder="3" />
+              </label>
+              <div class="mb-small-note" id="minibia-bot-magic-wall-status">Status: idle</div>
             </div>
           </div>
         </div>
@@ -7480,6 +8201,15 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     const cavePresetSelect = panel.querySelector("#minibia-bot-cave-preset-select");
     const cavePresetNewButton = panel.querySelector("#minibia-bot-cave-preset-new");
     const cavePresetDeleteButton = panel.querySelector("#minibia-bot-cave-preset-delete");
+    const caveRecordRopeButton = panel.querySelector("#minibia-bot-cave-record-rope");
+    const caveRecordLadderButton = panel.querySelector("#minibia-bot-cave-record-ladder");
+    const caveRecordShovelButton = panel.querySelector("#minibia-bot-cave-record-shovel");
+    const caveRecordUseButton = panel.querySelector("#minibia-bot-cave-record-use");
+    const caveRecordStandButton = panel.querySelector("#minibia-bot-cave-record-stand");
+    const magicWallEnabledInput = panel.querySelector("#minibia-bot-magic-wall-enabled");
+    const magicWallAudioInput = panel.querySelector("#minibia-bot-magic-wall-audio");
+    const magicWallDurationInput = panel.querySelector("#minibia-bot-magic-wall-duration");
+    const magicWallLeadInput = panel.querySelector("#minibia-bot-magic-wall-lead");
 
     if (collapseButton) {
       collapseButton.addEventListener("click", () => {
@@ -7678,6 +8408,66 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
         refreshCaveStatus();
         refreshCaveClosestStatus();
         refreshCaveTransitionStatus();
+      });
+    }
+
+    function bindCaveActionRecord(button, recorder) {
+      if (!button) return;
+      button.addEventListener("click", () => {
+        recorder?.();
+        refreshCavePresetControls();
+        refreshCaveClosestStatus();
+        refreshCaveTransitionStatus();
+      });
+    }
+
+    bindCaveActionRecord(caveRecordRopeButton, () => bot.cave?.addRopeWaypointCurrentSpot?.());
+    bindCaveActionRecord(caveRecordLadderButton, () => bot.cave?.addLadderWaypointCurrentSpot?.());
+    bindCaveActionRecord(caveRecordShovelButton, () => bot.cave?.addShovelWaypointCurrentSpot?.());
+    bindCaveActionRecord(caveRecordUseButton, () => bot.cave?.addUseWaypointCurrentSpot?.());
+    bindCaveActionRecord(caveRecordStandButton, () => bot.cave?.addStandWaypointCurrentSpot?.());
+
+    if (magicWallEnabledInput) {
+      magicWallEnabledInput.addEventListener("change", () => {
+        if (magicWallEnabledInput.checked) {
+          bot.magicWall?.start?.();
+        } else {
+          bot.magicWall?.stop?.();
+        }
+        refreshMagicWallStatus();
+      });
+    }
+
+    if (magicWallAudioInput) {
+      magicWallAudioInput.addEventListener("change", () => {
+        bot.magicWall?.updateConfig?.({ audioOnExpiry: !!magicWallAudioInput.checked });
+        refreshMagicWallStatus();
+      });
+    }
+
+    function applyMagicWallDuration() {
+      if (!magicWallDurationInput) return;
+      const seconds = Math.max(1, Math.min(120, Number(magicWallDurationInput.value) || 20));
+      const status = bot.magicWall?.status?.();
+      const next = (status?.config?.patternSpecs || []).map((spec) => {
+        if (spec && String(spec.name || "").toLowerCase().includes("magic wall")) {
+          return { ...spec, durationMs: seconds * 1000 };
+        }
+        return spec;
+      });
+      bot.magicWall?.updateConfig?.({ patternSpecs: next });
+      refreshMagicWallStatus();
+    }
+
+    if (magicWallDurationInput) {
+      magicWallDurationInput.addEventListener("change", applyMagicWallDuration);
+    }
+
+    if (magicWallLeadInput) {
+      magicWallLeadInput.addEventListener("change", () => {
+        const seconds = Math.max(0, Math.min(20, Number(magicWallLeadInput.value) || 3));
+        bot.magicWall?.updateConfig?.({ flashLeadMs: seconds * 1000, audioLeadMs: seconds * 1000 });
+        refreshMagicWallStatus();
       });
     }
 
@@ -7968,6 +8758,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     refreshCaveStatus();
     refreshEquipRingStatus();
     refreshTalkStatus();
+    refreshMagicWallStatus();
     refreshVisibleCreatures();
     refreshCavePresetControls();
     refreshCaveClosestStatus();
@@ -7993,6 +8784,10 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
       window.clearInterval(caveStatusTimerId);
     });
 
+    const magicWallStatusTimerId = window.setInterval(refreshMagicWallStatus, 1000);
+    bot.addCleanup(() => {
+      window.clearInterval(magicWallStatusTimerId);
+    });
   }
 
   bot.ui = {
@@ -8011,6 +8806,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     refreshCavePresetControls,
     refreshEquipRingStatus,
     refreshTalkStatus,
+    refreshMagicWallStatus,
     refreshVisibleCreatures,
     refreshCaveClosestStatus,
     refreshCaveTransitionStatus,
@@ -8034,6 +8830,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     ["equipRing", "minibiaBot.equipRing.config"],
     ["eat", "minibiaBot.eat.config"],
     ["talk", "minibiaBot.talk.config"],
+    ["magicWall", "minibiaBot.magicWall.config"],
   ];
 
   function getPersistedEnabledSnapshot(bot) {
@@ -8093,6 +8890,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     currentBundle.installEquipRingModule(bot);
     currentBundle.installAutoEatModule(bot);
     currentBundle.installTalkModule(bot);
+    currentBundle.installMagicWallModule(bot);
     currentBundle.installPanel(bot);
 
     bot.ui.inject();
@@ -8116,6 +8914,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
       equipRing: bot.equipRing.status(),
       eat: bot.eat.status(),
       talk: bot.talk.status(),
+      magicWall: bot.magicWall.status(),
     });
 
     window.minibiaBot = bot;
@@ -8123,7 +8922,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
 
     console.log("[minibia-bot] ready", {
       version: bot.version,
-      modules: ["pz", "xray", "panic", "rune", "heal", "invisible", "magicShield", "attack", "cave", "equipRing", "eat", "talk", "ui"],
+      modules: ["pz", "xray", "panic", "rune", "heal", "invisible", "magicShield", "attack", "cave", "equipRing", "eat", "talk", "magicWall", "ui"],
     });
     console.log("minibiaBot.reload()");
     console.log("minibiaBot.xray.status()");
@@ -8151,6 +8950,12 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     console.log("minibiaBot.talk.updateConfig({ apiKey: \"...\" })");
     console.log("minibiaBot.talk.start()");
     console.log("minibiaBot.talk.stop()");
+    console.log("minibiaBot.magicWall.start()");
+    console.log("minibiaBot.magicWall.stop()");
+    console.log("minibiaBot.cave.addRopeWaypointCurrentSpot()");
+    console.log("minibiaBot.cave.addLadderWaypointCurrentSpot()");
+    console.log("minibiaBot.cave.addShovelWaypointCurrentSpot()");
+    console.log("minibiaBot.cave.addUseWaypointCurrentSpot()");
     return bot;
   }
 

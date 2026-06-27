@@ -17,6 +17,17 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
     /\bgravel pile\b/i,
     /\bdirt pile\b/i,
   ];
+  const validWaypointActions = new Set([
+    "node",
+    "stand",
+    "walk",
+    "rope",
+    "ladder",
+    "shovel",
+    "use",
+    "label",
+  ]);
+  const defaultWaypointAction = "node";
   const state = {
     running: false,
     timerId: null,
@@ -222,8 +233,20 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
     };
   }
 
+  function normalizeWaypointAction(value) {
+    const normalized = String(value || "").trim().toLowerCase();
+    if (!normalized) return defaultWaypointAction;
+    return validWaypointActions.has(normalized) ? normalized : defaultWaypointAction;
+  }
+
   function normalizeWaypoint(waypoint) {
-    return normalizePosition(waypoint);
+    const position = normalizePosition(waypoint);
+    if (!position) return null;
+    const action = normalizeWaypointAction(waypoint?.action);
+    const labelText = String(waypoint?.label || "").trim();
+    const result = { ...position, action };
+    if (labelText) result.label = labelText;
+    return result;
   }
 
   function normalizeRoute(value) {
@@ -963,13 +986,25 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
     return best;
   }
 
+  function getWaypointTolerance(waypoint) {
+    const action = waypoint?.action || defaultWaypointAction;
+    const baseTolerance = Math.max(0, Number(config.waypointTolerance) || 0);
+    if (action === "node") {
+      return Math.max(baseTolerance, 2);
+    }
+    if (action === "walk") {
+      return Math.max(baseTolerance, 1);
+    }
+    return baseTolerance;
+  }
+
   function isAtWaypoint(position, waypoint) {
     const distance = getDistanceToWaypoint(position, waypoint);
     if (!Number.isFinite(distance)) {
       return false;
     }
 
-    return distance <= Math.max(0, Number(config.waypointTolerance) || 0);
+    return distance <= getWaypointTolerance(waypoint);
   }
 
   function goToWaypoint(waypoint) {
@@ -1271,6 +1306,86 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
     return true;
   }
 
+  function useTileDirect(targetTile, targetPosition, actionLabel, now = Date.now()) {
+    if (!targetTile || !targetPosition) return false;
+    const playerPosition = normalizePosition(bot.getPlayerPosition());
+    if (!playerPosition) return false;
+
+    if (!isAdjacentTile(playerPosition, targetPosition) && !isSameTile(playerPosition, targetPosition)) {
+      const adjacentPosition = findAdjacentWalkablePosition(targetPosition, playerPosition);
+      if (adjacentPosition) {
+        return goToPosition(adjacentPosition);
+      }
+      return false;
+    }
+
+    window.gameClient?.mouse?.use?.({ which: targetTile, index: 0xFF });
+    state.lastStairsUseAt = now;
+    state.lastPathAt = now;
+    markPendingTransitionSource(targetPosition);
+    bot.log(actionLabel, { source: targetPosition });
+    return true;
+  }
+
+  function handleActionWaypoint(waypoint, position, now = Date.now()) {
+    const action = waypoint?.action || defaultWaypointAction;
+
+    if (action === "label") {
+      advanceWaypoint();
+      return true;
+    }
+
+    if (action !== "rope" && action !== "ladder" && action !== "shovel" && action !== "use") {
+      return false;
+    }
+
+    if (now - state.lastStairsUseAt < 1200) {
+      return true;
+    }
+
+    const targetPosition = { x: waypoint.x, y: waypoint.y, z: waypoint.z };
+    const targetTile = getTileAt(targetPosition);
+    if (!targetTile) {
+      const adjacentPosition = findAdjacentWalkablePosition(targetPosition, position);
+      if (adjacentPosition) {
+        return goToPosition(adjacentPosition);
+      }
+      return false;
+    }
+
+    if (action === "rope") {
+      const rope = findRopeSource();
+      if (!rope) {
+        bot.log("cave waypoint needs rope but none found", { waypoint });
+        return false;
+      }
+      return useToolOnTile(rope, targetTile, targetPosition, "cave waypoint rope", now);
+    }
+
+    if (action === "shovel") {
+      const shovel = findShovelSource();
+      if (!shovel) {
+        bot.log("cave waypoint needs shovel but none found", { waypoint });
+        return false;
+      }
+      return useToolOnTile(shovel, targetTile, targetPosition, "cave waypoint shovel", now);
+    }
+
+    if (action === "ladder") {
+      return useTileDirect(targetTile, targetPosition, "cave waypoint ladder", now);
+    }
+
+    if (action === "use") {
+      const fired = useTileDirect(targetTile, targetPosition, "cave waypoint use", now);
+      if (fired) {
+        advanceWaypoint();
+      }
+      return fired;
+    }
+
+    return false;
+  }
+
   function handleFloorChange(waypoint, now = Date.now()) {
     const position = normalizePosition(bot.getPlayerPosition());
     if (!position || !waypoint || position.z === waypoint.z) {
@@ -1404,12 +1519,31 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
         return;
       }
 
-      if (isAtWaypoint(position, waypoint)) {
+      const action = waypoint.action || defaultWaypointAction;
+      const isFloorAction = action === "rope" || action === "ladder" || action === "shovel";
+      const isPointAction = action === "use" || action === "label";
+
+      if (isFloorAction && position && position.z === waypoint.z) {
         waypoint = advanceWaypoint();
+        if (!waypoint) return;
+      } else if (isAtWaypoint(position, waypoint) && !isFloorAction && !isPointAction) {
+        waypoint = advanceWaypoint();
+        if (!waypoint) return;
       }
 
-      if (!waypoint) {
-        return;
+      const currentAction = waypoint.action || defaultWaypointAction;
+      const isAnyAction =
+        currentAction === "rope" ||
+        currentAction === "ladder" ||
+        currentAction === "shovel" ||
+        currentAction === "use" ||
+        currentAction === "label";
+
+      if (isAnyAction) {
+        const handled = handleActionWaypoint(waypoint, position, now);
+        if (handled) {
+          return;
+        }
       }
 
       if (position && waypoint.z !== position.z) {
@@ -1521,14 +1655,61 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
     return cloneValue(normalized);
   }
 
-  function addWaypointCurrentSpot() {
+  function addWaypointCurrentSpot(action = defaultWaypointAction, label = null) {
     const position = normalizePosition(bot.getPlayerPosition());
     if (!position) {
       bot.log("could not read current position for cave waypoint");
       return null;
     }
 
-    return addWaypoint(position);
+    const waypoint = { ...position, action };
+    if (label) waypoint.label = label;
+    return addWaypoint(waypoint);
+  }
+
+  function addRopeWaypointCurrentSpot() {
+    return addWaypointCurrentSpot("rope");
+  }
+
+  function addLadderWaypointCurrentSpot() {
+    return addWaypointCurrentSpot("ladder");
+  }
+
+  function addShovelWaypointCurrentSpot() {
+    return addWaypointCurrentSpot("shovel");
+  }
+
+  function addUseWaypointCurrentSpot() {
+    return addWaypointCurrentSpot("use");
+  }
+
+  function addStandWaypointCurrentSpot() {
+    return addWaypointCurrentSpot("stand");
+  }
+
+  function addLabelWaypoint(label) {
+    const position = normalizePosition(bot.getPlayerPosition());
+    if (!position) {
+      bot.log("could not read current position for label waypoint");
+      return null;
+    }
+
+    return addWaypoint({ ...position, action: "label", label });
+  }
+
+  function setWaypointAction(index, action, label = null) {
+    if (!route.length || index < 0 || index >= route.length) {
+      return null;
+    }
+
+    const current = route[index];
+    const next = normalizeWaypoint({ ...current, action, label: label ?? current.label });
+    if (!next) return null;
+
+    route[index] = next;
+    persistRoute();
+    bot.log("cave waypoint action updated", { index, ...next });
+    return cloneValue(next);
   }
 
   function clearWaypoints() {
@@ -1647,6 +1828,14 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
     deletePreset,
     addWaypoint,
     addWaypointCurrentSpot,
+    addRopeWaypointCurrentSpot,
+    addLadderWaypointCurrentSpot,
+    addShovelWaypointCurrentSpot,
+    addUseWaypointCurrentSpot,
+    addStandWaypointCurrentSpot,
+    addLabelWaypoint,
+    setWaypointAction,
+    waypointActions: Array.from(validWaypointActions),
     clearWaypoints,
     clearTransitions,
     removeLastWaypoint,

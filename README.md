@@ -12,7 +12,7 @@
 6. Paste this and press `Enter`:
 
 ```js
-fetch("https://raw.githubusercontent.com/spardue/minibia-bot/refs/heads/main/pz-bot.js")
+fetch("https://raw.githubusercontent.com/Sconn-sys/Minibia-Bot/refs/heads/main/pz-bot.js")
   .then((r) => r.text())
   .then((code) => eval(code));
 ```
@@ -68,6 +68,20 @@ minibiaBot.heal.start()
 minibiaBot.heal.stop()
 minibiaBot.heal.status()
 
+minibiaBot.magicWall.start()           // overlay 20s countdown on placed magic walls
+minibiaBot.magicWall.stop()
+minibiaBot.magicWall.status()
+minibiaBot.magicWall.list()            // active timers
+minibiaBot.magicWall.updateConfig({ audioOnExpiry: true, flashLeadMs: 3000 })
+
+// Multi-floor cavebot waypoints (ElfBot/NeoBot style):
+minibiaBot.cave.addWaypointCurrentSpot()                 // "node" (default)
+minibiaBot.cave.addStandWaypointCurrentSpot()            // exact tile
+minibiaBot.cave.addRopeWaypointCurrentSpot()             // use rope on this tile
+minibiaBot.cave.addLadderWaypointCurrentSpot()           // use ladder on this tile
+minibiaBot.cave.addShovelWaypointCurrentSpot()           // dig with shovel
+minibiaBot.cave.addUseWaypointCurrentSpot()              // single click-use (levers, holes you step on)
+minibiaBot.cave.addLabelWaypoint("depot")
 ```
 
 Backward-compatible alias:

@@ -15,6 +15,7 @@ cat \
   src/modules/equip-ring.js \
   src/modules/auto-eat.js \
   src/modules/talk.js \
+  src/modules/magic-wall.js \
   src/ui/panel.js \
   src/main.js \
   > pz-bot.js

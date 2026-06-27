@@ -371,6 +371,43 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     equipRingToggle.checked = !!bot.equipRing?.status?.().running;
   }
 
+  function refreshMagicWallStatus() {
+    const enabledInput = document.getElementById("minibia-bot-magic-wall-enabled");
+    const audioInput = document.getElementById("minibia-bot-magic-wall-audio");
+    const durationInput = document.getElementById("minibia-bot-magic-wall-duration");
+    const leadInput = document.getElementById("minibia-bot-magic-wall-lead");
+    const statusLabel = document.getElementById("minibia-bot-magic-wall-status");
+    const status = bot.magicWall?.status?.();
+
+    if (enabledInput) {
+      enabledInput.checked = !!status?.running;
+    }
+    if (audioInput) {
+      audioInput.checked = !!status?.config?.audioOnExpiry;
+    }
+    if (durationInput && document.activeElement !== durationInput) {
+      const primary = status?.config?.patternSpecs?.find((spec) =>
+        String(spec?.name || "").toLowerCase().includes("magic wall")
+      );
+      const seconds = primary ? Math.round((Number(primary.durationMs) || 20000) / 1000) : 20;
+      durationInput.value = String(seconds);
+    }
+    if (leadInput && document.activeElement !== leadInput) {
+      const lead = Math.round((Number(status?.config?.flashLeadMs) || 3000) / 1000);
+      leadInput.value = String(lead);
+    }
+    if (statusLabel) {
+      const activeCount = Array.isArray(status?.timers) ? status.timers.length : 0;
+      if (!status?.running) {
+        statusLabel.textContent = "Status: idle";
+      } else if (activeCount === 0) {
+        statusLabel.textContent = "Status: watching";
+      } else {
+        statusLabel.textContent = `Status: ${activeCount} active`;
+      }
+    }
+  }
+
   function refreshTalkStatus() {
     const talkToggle = document.getElementById("minibia-bot-talk-enabled");
     const statusLabel = document.getElementById("minibia-bot-talk-status");
@@ -1044,8 +1081,17 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
                 <button type="button" class="mb-small-button" id="minibia-bot-cave-preset-delete">Delete</button>
               </div>
               <div class="mb-actions mb-actions-inline-two">
-                <button type="button" class="mb-small-button" id="minibia-bot-cave-record">Record Spot</button>
+                <button type="button" class="mb-small-button" id="minibia-bot-cave-record">Record Node</button>
                 <button type="button" class="mb-small-button" id="minibia-bot-cave-remove-last">Remove Last</button>
+              </div>
+              <div class="mb-actions mb-actions-inline-three">
+                <button type="button" class="mb-small-button" id="minibia-bot-cave-record-rope">+ Rope</button>
+                <button type="button" class="mb-small-button" id="minibia-bot-cave-record-ladder">+ Ladder</button>
+                <button type="button" class="mb-small-button" id="minibia-bot-cave-record-shovel">+ Shovel</button>
+              </div>
+              <div class="mb-actions mb-actions-inline-two">
+                <button type="button" class="mb-small-button" id="minibia-bot-cave-record-use">+ Use Tile</button>
+                <button type="button" class="mb-small-button" id="minibia-bot-cave-record-stand">+ Stand</button>
               </div>
               <div class="mb-small-note" id="minibia-bot-cave-closest">Closest start: no waypoints</div>
               <div class="mb-small-note" id="minibia-bot-cave-transition-status">Transitions learned: none</div>
@@ -1076,6 +1122,28 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
                 <input type="number" id="minibia-bot-auto-attack-rune-hotkey" min="1" max="12" placeholder="4" />
               </label>
               <div class="mb-small-note">Melee mode uses the target hotkey, then walks adjacent to the target. Non-melee mode uses the target hotkey to acquire a target and the rune hotkey to cast on that target.</div>
+            </div>
+          </div>
+          <div class="mb-section mb-column-section">
+            <div class="mb-label">Magic Wall Timer</div>
+            <div class="mb-stack">
+              <label class="mb-toggle">
+                <input type="checkbox" id="minibia-bot-magic-wall-enabled" />
+                <span>Show on-screen MW timer</span>
+              </label>
+              <label class="mb-toggle">
+                <input type="checkbox" id="minibia-bot-magic-wall-audio" />
+                <span>Alarm at lead time</span>
+              </label>
+              <label class="mb-field" for="minibia-bot-magic-wall-duration">
+                <span class="mb-field-label">Duration (s)</span>
+                <input type="number" id="minibia-bot-magic-wall-duration" min="1" max="120" placeholder="20" />
+              </label>
+              <label class="mb-field" for="minibia-bot-magic-wall-lead">
+                <span class="mb-field-label">Flash/alarm lead (s)</span>
+                <input type="number" id="minibia-bot-magic-wall-lead" min="0" max="20" placeholder="3" />
+              </label>
+              <div class="mb-small-note" id="minibia-bot-magic-wall-status">Status: idle</div>
             </div>
           </div>
         </div>
@@ -1137,6 +1205,15 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     const cavePresetSelect = panel.querySelector("#minibia-bot-cave-preset-select");
     const cavePresetNewButton = panel.querySelector("#minibia-bot-cave-preset-new");
     const cavePresetDeleteButton = panel.querySelector("#minibia-bot-cave-preset-delete");
+    const caveRecordRopeButton = panel.querySelector("#minibia-bot-cave-record-rope");
+    const caveRecordLadderButton = panel.querySelector("#minibia-bot-cave-record-ladder");
+    const caveRecordShovelButton = panel.querySelector("#minibia-bot-cave-record-shovel");
+    const caveRecordUseButton = panel.querySelector("#minibia-bot-cave-record-use");
+    const caveRecordStandButton = panel.querySelector("#minibia-bot-cave-record-stand");
+    const magicWallEnabledInput = panel.querySelector("#minibia-bot-magic-wall-enabled");
+    const magicWallAudioInput = panel.querySelector("#minibia-bot-magic-wall-audio");
+    const magicWallDurationInput = panel.querySelector("#minibia-bot-magic-wall-duration");
+    const magicWallLeadInput = panel.querySelector("#minibia-bot-magic-wall-lead");
 
     if (collapseButton) {
       collapseButton.addEventListener("click", () => {
@@ -1335,6 +1412,66 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
         refreshCaveStatus();
         refreshCaveClosestStatus();
         refreshCaveTransitionStatus();
+      });
+    }
+
+    function bindCaveActionRecord(button, recorder) {
+      if (!button) return;
+      button.addEventListener("click", () => {
+        recorder?.();
+        refreshCavePresetControls();
+        refreshCaveClosestStatus();
+        refreshCaveTransitionStatus();
+      });
+    }
+
+    bindCaveActionRecord(caveRecordRopeButton, () => bot.cave?.addRopeWaypointCurrentSpot?.());
+    bindCaveActionRecord(caveRecordLadderButton, () => bot.cave?.addLadderWaypointCurrentSpot?.());
+    bindCaveActionRecord(caveRecordShovelButton, () => bot.cave?.addShovelWaypointCurrentSpot?.());
+    bindCaveActionRecord(caveRecordUseButton, () => bot.cave?.addUseWaypointCurrentSpot?.());
+    bindCaveActionRecord(caveRecordStandButton, () => bot.cave?.addStandWaypointCurrentSpot?.());
+
+    if (magicWallEnabledInput) {
+      magicWallEnabledInput.addEventListener("change", () => {
+        if (magicWallEnabledInput.checked) {
+          bot.magicWall?.start?.();
+        } else {
+          bot.magicWall?.stop?.();
+        }
+        refreshMagicWallStatus();
+      });
+    }
+
+    if (magicWallAudioInput) {
+      magicWallAudioInput.addEventListener("change", () => {
+        bot.magicWall?.updateConfig?.({ audioOnExpiry: !!magicWallAudioInput.checked });
+        refreshMagicWallStatus();
+      });
+    }
+
+    function applyMagicWallDuration() {
+      if (!magicWallDurationInput) return;
+      const seconds = Math.max(1, Math.min(120, Number(magicWallDurationInput.value) || 20));
+      const status = bot.magicWall?.status?.();
+      const next = (status?.config?.patternSpecs || []).map((spec) => {
+        if (spec && String(spec.name || "").toLowerCase().includes("magic wall")) {
+          return { ...spec, durationMs: seconds * 1000 };
+        }
+        return spec;
+      });
+      bot.magicWall?.updateConfig?.({ patternSpecs: next });
+      refreshMagicWallStatus();
+    }
+
+    if (magicWallDurationInput) {
+      magicWallDurationInput.addEventListener("change", applyMagicWallDuration);
+    }
+
+    if (magicWallLeadInput) {
+      magicWallLeadInput.addEventListener("change", () => {
+        const seconds = Math.max(0, Math.min(20, Number(magicWallLeadInput.value) || 3));
+        bot.magicWall?.updateConfig?.({ flashLeadMs: seconds * 1000, audioLeadMs: seconds * 1000 });
+        refreshMagicWallStatus();
       });
     }
 
@@ -1625,6 +1762,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     refreshCaveStatus();
     refreshEquipRingStatus();
     refreshTalkStatus();
+    refreshMagicWallStatus();
     refreshVisibleCreatures();
     refreshCavePresetControls();
     refreshCaveClosestStatus();
@@ -1650,6 +1788,10 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
       window.clearInterval(caveStatusTimerId);
     });
 
+    const magicWallStatusTimerId = window.setInterval(refreshMagicWallStatus, 1000);
+    bot.addCleanup(() => {
+      window.clearInterval(magicWallStatusTimerId);
+    });
   }
 
   bot.ui = {
@@ -1668,6 +1810,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     refreshCavePresetControls,
     refreshEquipRingStatus,
     refreshTalkStatus,
+    refreshMagicWallStatus,
     refreshVisibleCreatures,
     refreshCaveClosestStatus,
     refreshCaveTransitionStatus,
