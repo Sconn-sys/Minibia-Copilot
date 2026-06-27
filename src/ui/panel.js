@@ -1318,6 +1318,16 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
                 <input type="checkbox" id="minibia-copilot-auto-attack-melee" />
                 <span>Melee Mode</span>
               </label>
+              <label class="mc-field" for="minibia-copilot-auto-attack-strategy">
+                <span class="mc-field-label">Targeting</span>
+                <select id="minibia-copilot-auto-attack-strategy">
+                  <option value="manual">Manual hotkey only</option>
+                  <option value="nearest">Attack nearest monster</option>
+                  <option value="highest-hp">Attack highest HP</option>
+                  <option value="lowest-hp">Attack lowest HP</option>
+                  <option value="cycle">Cycle target monster</option>
+                </select>
+              </label>
               <div class="mc-field-grid">
                 <label class="mc-field" for="minibia-copilot-auto-attack-hotkey">
                   <span class="mc-field-label">Target Hotkey (1-12)</span>
@@ -1328,7 +1338,17 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
                   <input type="number" id="minibia-copilot-auto-attack-rune-hotkey" min="1" max="12" placeholder="4" />
                 </label>
               </div>
-              <div class="mc-small-note">Melee mode uses the target hotkey, then walks adjacent. Non-melee uses target hotkey to acquire, rune hotkey to cast.</div>
+              <div class="mc-field-grid">
+                <label class="mc-field" for="minibia-copilot-auto-attack-safe-distance">
+                  <span class="mc-field-label">Kite distance (sqm)</span>
+                  <input type="number" id="minibia-copilot-auto-attack-safe-distance" min="1" max="7" placeholder="4" />
+                </label>
+                <label class="mc-toggle" style="align-self:end;">
+                  <input type="checkbox" id="minibia-copilot-auto-attack-kite" />
+                  <span>Kite (non-melee)</span>
+                </label>
+              </div>
+              <div class="mc-small-note">Strategy "Manual" uses your hotkey. The other modes call the in-game action directly so no hotkey binding is needed. Kiting only runs when not in Melee mode.</div>
             </div>
           </div>
 
@@ -1577,6 +1597,9 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
     const autoAttackMeleeInput = panel.querySelector("#minibia-copilot-auto-attack-melee");
     const autoAttackHotkeyInput = panel.querySelector("#minibia-copilot-auto-attack-hotkey");
     const autoAttackRuneHotkeyInput = panel.querySelector("#minibia-copilot-auto-attack-rune-hotkey");
+    const autoAttackStrategyInput = panel.querySelector("#minibia-copilot-auto-attack-strategy");
+    const autoAttackSafeDistanceInput = panel.querySelector("#minibia-copilot-auto-attack-safe-distance");
+    const autoAttackKiteInput = panel.querySelector("#minibia-copilot-auto-attack-kite");
     const talkEnabledInput = panel.querySelector("#minibia-copilot-talk-enabled");
     const talkApiKeyInput = panel.querySelector("#minibia-copilot-talk-api-key");
     const talkPromptInput = panel.querySelector("#minibia-copilot-talk-prompt");
@@ -2078,6 +2101,29 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
       autoAttackMeleeInput.checked = bot.attack?.config?.meleeMode !== false;
       autoAttackMeleeInput.addEventListener("change", () => {
         bot.attack.updateConfig({ meleeMode: autoAttackMeleeInput.checked });
+      });
+    }
+
+    if (autoAttackStrategyInput) {
+      autoAttackStrategyInput.value = String(bot.attack?.config?.targetingStrategy || "manual");
+      autoAttackStrategyInput.addEventListener("change", () => {
+        bot.attack.updateConfig({ targetingStrategy: autoAttackStrategyInput.value });
+      });
+    }
+
+    if (autoAttackSafeDistanceInput) {
+      autoAttackSafeDistanceInput.value = String(bot.attack?.config?.safeDistance ?? 4);
+      autoAttackSafeDistanceInput.addEventListener("change", () => {
+        const safeDistance = Math.max(1, Math.min(7, Number(autoAttackSafeDistanceInput.value) || 4));
+        autoAttackSafeDistanceInput.value = String(safeDistance);
+        bot.attack.updateConfig({ safeDistance });
+      });
+    }
+
+    if (autoAttackKiteInput) {
+      autoAttackKiteInput.checked = bot.attack?.config?.kitingEnabled !== false;
+      autoAttackKiteInput.addEventListener("change", () => {
+        bot.attack.updateConfig({ kitingEnabled: autoAttackKiteInput.checked });
       });
     }
 

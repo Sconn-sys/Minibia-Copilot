@@ -61,6 +61,7 @@ window.__minibiaCopilotBundle.installCaveModule = function installCaveModule(bot
       tickMs: 500,
       repathMs: 1500,
       waypointTolerance: 0,
+      idleSnapMs: 10000,
       enabled: false,
       activePresetName: defaultPresetName,
     },
@@ -1516,32 +1517,56 @@ window.__minibiaCopilotBundle.installCaveModule = function installCaveModule(bot
       const position = normalizePosition(bot.getPlayerPosition());
       const positionKey = getPositionKey(position);
       const now = Date.now();
+      const playerHasTarget = !!window.gameClient?.player?.__target;
       const attackStatus = bot.attack?.status?.() || null;
       const shouldPauseForCombat =
-        !!attackStatus?.combatActive &&
-        Number(attackStatus?.combatDurationMs || 0) < 60000;
+        playerHasTarget ||
+        (!!attackStatus?.combatActive && Number(attackStatus?.combatDurationMs || 0) < 60000);
 
       if (shouldPauseForCombat) {
         if (!state.pausedForCombat) {
           state.pausedForCombat = true;
-          bot.log("cave paused for auto attack", {
+          bot.log("cave paused for combat", {
+            playerHasTarget,
             combatDurationMs: Number(attackStatus?.combatDurationMs || 0),
             targetCount: Number(attackStatus?.targetCount || 0),
           });
         }
+        state.lastProgressAt = now;
         return;
       }
 
       if (state.pausedForCombat) {
         state.pausedForCombat = false;
-        bot.log("cave resumed after auto attack", {
+        state.lastProgressAt = now;
+        bot.log("cave resumed after combat", {
           combatDurationMs: Number(attackStatus?.combatDurationMs || 0),
-          targetCount: Number(attackStatus?.targetCount || 0),
         });
       }
 
       if (positionKey && positionKey !== state.lastPositionKey) {
         state.lastPositionKey = positionKey;
+        state.lastProgressAt = now;
+      }
+
+      const idleSnapMs = Math.max(2000, Number(config.idleSnapMs) || 10000);
+      if (
+        position &&
+        state.lastProgressAt &&
+        now - state.lastProgressAt >= idleSnapMs
+      ) {
+        const closestIndex = findClosestWaypointIndex(position);
+        if (closestIndex !== state.currentIndex) {
+          bot.log("cave idle: snapping to nearest waypoint", {
+            fromIndex: state.currentIndex + 1,
+            toIndex: closestIndex + 1,
+            idleForMs: now - state.lastProgressAt,
+          });
+          state.currentIndex = closestIndex;
+          state.direction = closestIndex >= route.length - 1 ? -1 : 1;
+          if (route.length <= 1) state.direction = 1;
+          state.lastPathAt = 0;
+        }
         state.lastProgressAt = now;
       }
 
