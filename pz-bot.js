@@ -6645,7 +6645,9 @@ window.__minibiaBotBundle.installMagicWallModule = function installMagicWallModu
       existing.spec = spec;
       existing.itemId = item?.id ?? existing.itemId;
       bot.log("magic wall timer refreshed", { position, durationMs });
-      try { render(); } catch (error) {}
+      try { render(); } catch (error) {
+        console.error("[minibia-bot] magic-wall render failed", error);
+      }
       return;
     }
 
@@ -6659,7 +6661,9 @@ window.__minibiaBotBundle.installMagicWallModule = function installMagicWallModu
     });
     state.alarmedFor.delete(key);
     bot.log("magic wall timer started", { position, durationMs, itemName: getItemName(item) });
-    try { render(); } catch (error) {}
+    try { render(); } catch (error) {
+      console.error("[minibia-bot] magic-wall render failed", error);
+    }
   }
 
   function clearExpired(now = Date.now()) {
@@ -6813,7 +6817,7 @@ window.__minibiaBotBundle.installMagicWallModule = function installMagicWallModu
         position: fixed;
         inset: 0;
         pointer-events: none;
-        z-index: 999996;
+        z-index: 2147483646;
       }
       #${overlayRootId} canvas {
         position: fixed;
@@ -7054,6 +7058,74 @@ window.__minibiaBotBundle.installMagicWallModule = function installMagicWallModu
     return on;
   }
 
+  function debugOverlay() {
+    ensureOverlayStyle();
+    const root = ensureOverlayRoot();
+    const canvas = root.querySelector("canvas");
+    const viewport = getGameViewport();
+    const playerPosition = window.gameClient?.player?.getPosition?.();
+    const diagnostic = {
+      rootInDom: !!document.getElementById(overlayRootId),
+      canvasInDom: !!canvas,
+      viewportFound: !!viewport,
+      gameCanvasFound: !!window.gameClient?.renderer?.screen?.canvas,
+      gameCanvasRect: viewport ? {
+        left: viewport.rect.left,
+        top: viewport.rect.top,
+        width: viewport.rect.width,
+        height: viewport.rect.height,
+      } : null,
+      gameCanvasInternal: viewport ? {
+        width: viewport.canvas.width,
+        height: viewport.canvas.height,
+      } : null,
+      scaling: getScalingVector(),
+      moveOffset: getPlayerMoveOffset(),
+      playerPosition,
+      overlayTimerRunning: state.overlayTimerId != null,
+      hooksInstalled: !!state.patches,
+      timersCount: state.timers.size,
+    };
+    console.log("[minibia-bot] magic-wall debugOverlay", diagnostic);
+
+    if (!canvas || !viewport) {
+      console.warn("[minibia-bot] magic-wall debugOverlay: cannot draw test pattern", { canvas, viewport });
+      return diagnostic;
+    }
+
+    const rect = viewport.rect;
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    const width = Math.max(1, Math.round(rect.width));
+    const height = Math.max(1, Math.round(rect.height));
+    canvas.width = Math.round(width * dpr);
+    canvas.height = Math.round(height * dpr);
+    canvas.style.left = `${Math.round(rect.left)}px`;
+    canvas.style.top = `${Math.round(rect.top)}px`;
+    canvas.style.width = `${width}px`;
+    canvas.style.height = `${height}px`;
+
+    const context = canvas.getContext("2d");
+    if (!context) {
+      console.warn("[minibia-bot] magic-wall debugOverlay: 2d context unavailable");
+      return diagnostic;
+    }
+
+    context.setTransform(dpr, 0, 0, dpr, 0, 0);
+    context.fillStyle = "rgba(255, 0, 0, 0.4)";
+    context.fillRect(0, 0, width, height);
+    context.strokeStyle = "#ffff00";
+    context.lineWidth = 6;
+    context.strokeRect(3, 3, width - 6, height - 6);
+    context.fillStyle = "#ffffff";
+    context.font = "bold 32px Verdana, sans-serif";
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.fillText("MW OVERLAY OK", width / 2, height / 2);
+
+    console.log("[minibia-bot] magic-wall debugOverlay: red rectangle drawn. If you see it on the game viewport, the overlay works; the issue is detection or projection. Call minibiaBot.magicWall.clear() to remove.");
+    return diagnostic;
+  }
+
   function testTimer(durationSeconds = 20) {
     const playerPosition = window.gameClient?.player?.getPosition?.();
     if (!playerPosition) {
@@ -7102,6 +7174,7 @@ window.__minibiaBotBundle.installMagicWallModule = function installMagicWallModu
     clear,
     updateConfig,
     debugEnable,
+    debugOverlay,
     testTimer,
     config,
   };
