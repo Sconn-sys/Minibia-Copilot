@@ -2923,15 +2923,6 @@ window.__minibiaCopilotBundle.installAutoAttackModule = function installAutoAtta
     skippedTargetIds: new Map(),
   };
 
-  const validTargetingStrategies = new Set([
-    "manual",
-    "nearest",
-    "highest-hp",
-    "lowest-hp",
-    "cycle",
-    "priority",
-  ]);
-
   const storedConfig = bot.storage.get(configStorageKey, {}) || {};
   if (storedConfig.tickMs === 500) delete storedConfig.tickMs;
   if (storedConfig.tickMs === 250) delete storedConfig.tickMs;
@@ -2939,21 +2930,20 @@ window.__minibiaCopilotBundle.installAutoAttackModule = function installAutoAtta
   if (storedConfig.targetCooldownMs === 500) delete storedConfig.targetCooldownMs;
   if (storedConfig.runeCooldownMs === 1200) delete storedConfig.runeCooldownMs;
   if (storedConfig.runeCooldownMs === 500) delete storedConfig.runeCooldownMs;
+  delete storedConfig.targetingStrategy;
+  delete storedConfig.preemptPriority;
   const config = Object.assign(
     {
       tickMs: 150,
-      targetHotbarSlot: 3,
       runeHotbarSlot: null,
       targetCooldownMs: 300,
       runeCooldownMs: 300,
       maxTargetDistance: 8,
       meleeMode: true,
       enabled: false,
-      targetingStrategy: "manual",
       safeDistance: 4,
       kitingEnabled: true,
       targetPriority: [],
-      preemptPriority: true,
       attackRange: 5,
       chaseInNonMelee: true,
     },
@@ -3298,17 +3288,9 @@ window.__minibiaCopilotBundle.installAutoAttackModule = function installAutoAtta
     pruneSkippedTargets(now);
 
     const playerPosition = normalizePosition(bot.getPlayerPosition());
-    const usePriority = String(config.targetingStrategy || "").toLowerCase() === "priority";
     return getNearbyMonsters()
       .filter((monster) => !isTargetSkipped(monster, now))
-      .sort((left, right) => {
-        if (usePriority) {
-          return compareCandidatesByPriority(left, right, playerPosition);
-        }
-        const leftDistance = getTileDistance(playerPosition, normalizePosition(left?.getPosition?.() || left?.__position));
-        const rightDistance = getTileDistance(playerPosition, normalizePosition(right?.getPosition?.() || right?.__position));
-        return leftDistance - rightDistance || Number(left?.id || 0) - Number(right?.id || 0);
-      });
+      .sort((left, right) => compareCandidatesByPriority(left, right, playerPosition));
   }
 
   function shouldGiveUpTarget(target) {
@@ -3414,42 +3396,6 @@ window.__minibiaCopilotBundle.installAutoAttackModule = function installAutoAtta
     }
 
     return null;
-  }
-
-  function callHotbarAction(actionName) {
-    const mgr = window.gameClient?.interface?.hotbarManager;
-    if (!mgr || typeof mgr.__executeAction !== "function") return false;
-    try {
-      mgr.__executeAction(actionName);
-      return true;
-    } catch (error) {
-      bot.log("hotbar action failed", { actionName, error: error?.message || error });
-      return false;
-    }
-  }
-
-  function tryTargetingStrategy(now = Date.now()) {
-    const strategy = String(config.targetingStrategy || "manual").toLowerCase();
-    if (!validTargetingStrategies.has(strategy) || strategy === "manual") {
-      return false;
-    }
-
-    const actionMap = {
-      "nearest": "attackNearest",
-      "highest-hp": "attackHighestHp",
-      "lowest-hp": "attackLowestHp",
-      "cycle": "cycleTarget",
-    };
-    const actionName = actionMap[strategy];
-    if (!actionName) return false;
-
-    const fired = callHotbarAction(actionName);
-    if (fired) {
-      state.lastTargetHotkeyAt = now;
-      markCombatActive(now);
-      bot.log("invoked targeting strategy", { strategy, actionName });
-    }
-    return fired;
   }
 
   function findFleePosition(playerPosition, monsters, desiredDistance) {
@@ -3655,110 +3601,71 @@ window.__minibiaCopilotBundle.installAutoAttackModule = function installAutoAtta
   }
 
   function canAttack(now = Date.now()) {
-    const strategy = String(config.targetingStrategy || "manual").toLowerCase();
-    const hasStrategy = strategy !== "manual" && validTargetingStrategies.has(strategy);
-    const slot = normalizeHotbarSlot(config.targetHotbarSlot);
-    if (!hasStrategy && !slot && strategy !== "priority") {
-      return false;
-    }
-
     if (now - state.lastTargetHotkeyAt < Math.max(0, Number(config.targetCooldownMs) || 0)) {
       return false;
     }
-
-    if (config.meleeMode) {
-      return getMonsterCandidates(now).length > 0 && !getCurrentTarget();
-    }
-
     return getNearbyMonsters().length > 0;
   }
 
+  function shouldPreemptCurrent(currentTarget, bestCandidate, playerPosition) {
+    if (!currentTarget || !bestCandidate || !playerPosition) return false;
+    if (isSameCreature(currentTarget, bestCandidate)) return false;
+
+    const currentDistance = getTileDistance(
+      playerPosition,
+      normalizePosition(currentTarget?.getPosition?.() || currentTarget?.__position)
+    );
+    const bestDistance = getTileDistance(
+      playerPosition,
+      normalizePosition(bestCandidate?.getPosition?.() || bestCandidate?.__position)
+    );
+    const currentIsAdjacent = currentDistance <= 1;
+    const bestIsAdjacent = bestDistance <= 1;
+    const currentPriority = getPriorityIndex(currentTarget);
+    const bestPriority = getPriorityIndex(bestCandidate);
+
+    if (bestIsAdjacent && !currentIsAdjacent) return true;
+    if (bestPriority < currentPriority) return true;
+    return false;
+  }
+
   function triggerAttack(now = Date.now()) {
-    if (!canAttack(now)) {
+    if (!canAttack(now)) return false;
+
+    const candidates = getMonsterCandidates(now);
+    if (!candidates.length) return false;
+
+    const playerPosition = normalizePosition(bot.getPlayerPosition());
+    const currentTarget = getCurrentTarget();
+    const bestCandidate = candidates[0];
+
+    if (currentTarget && !isTargetSkipped(currentTarget, now)) {
+      if (shouldPreemptCurrent(currentTarget, bestCandidate, playerPosition)) {
+        if (setCurrentTarget(bestCandidate)) {
+          state.lastTargetHotkeyAt = now;
+          markCombatActive(now);
+          bot.log("preempting target", {
+            from: currentTarget?.name || "Mob",
+            to: bestCandidate.name || "Mob",
+          });
+          return true;
+        }
+      }
       return false;
     }
 
-    const strategy = String(config.targetingStrategy || "manual").toLowerCase();
-    if (strategy !== "manual" && strategy !== "priority" && !getCurrentTarget()) {
-      if (tryTargetingStrategy(now)) return true;
-    }
-
-    if (strategy === "priority" && config.preemptPriority && getCurrentTarget()) {
-      const currentTarget = getCurrentTarget();
-      const candidates = getMonsterCandidates(now);
-      const bestCandidate = candidates[0];
-      const playerPosition = normalizePosition(bot.getPlayerPosition());
-
-      if (
-        bestCandidate &&
-        !isSameCreature(bestCandidate, currentTarget) &&
-        playerPosition
-      ) {
-        const currentDistance = getTileDistance(
-          playerPosition,
-          normalizePosition(currentTarget?.getPosition?.() || currentTarget?.__position)
-        );
-        const bestDistance = getTileDistance(
-          playerPosition,
-          normalizePosition(bestCandidate?.getPosition?.() || bestCandidate?.__position)
-        );
-        const currentIsAdjacent = currentDistance <= 1;
-        const bestIsAdjacent = bestDistance <= 1;
-        const currentPriority = getPriorityIndex(currentTarget);
-        const bestPriority = getPriorityIndex(bestCandidate);
-
-        const adjacencyChange = bestIsAdjacent && !currentIsAdjacent;
-        const strictlyHigherPriority = bestPriority < currentPriority;
-
-        if (adjacencyChange || strictlyHigherPriority) {
-          if (setCurrentTarget(bestCandidate)) {
-            state.lastTargetHotkeyAt = now;
-            markCombatActive(now);
-            bot.log("preempting target", {
-              from: currentTarget?.name || "Mob",
-              to: bestCandidate.name || "Mob",
-              reason: adjacencyChange ? "adjacent blocker" : "higher priority",
-              priorityIndex: bestPriority,
-            });
-            return true;
-          }
-        }
-      }
-    }
-
-    const engagedTarget = getEngagedTarget();
-    const preferredTarget = engagedTarget && !isTargetSkipped(engagedTarget, now)
-      ? engagedTarget
-      : (getMonsterCandidates(now)[0] || null);
-    if (preferredTarget && setCurrentTarget(preferredTarget)) {
+    if (setCurrentTarget(bestCandidate)) {
       state.lastTargetHotkeyAt = now;
       markCombatActive(now);
-      bot.log("selected auto attack target", {
-        id: preferredTarget.id,
-        name: preferredTarget.name || "Mob",
-        reason: isSameCreature(preferredTarget, engagedTarget) ? "engaged target" : "nearest candidate",
+      bot.log("acquired target", {
+        id: bestCandidate.id,
+        name: bestCandidate.name || "Mob",
+        priorityIndex: getPriorityIndex(bestCandidate),
       });
       return true;
     }
 
-    if (config.meleeMode) {
-      return false;
-    }
-
-    const slot = normalizeHotbarSlot(config.targetHotbarSlot);
-    if (!slot) return false;
-    const clicked = bot.clickHotbar(slot - 1);
-    if (clicked) {
-      const monsters = getNearbyMonsters();
-      state.lastTargetHotkeyAt = now;
-      markCombatActive(now);
-      bot.log("used auto attack target hotkey", {
-        slot,
-        nearbyMonsters: monsters.map((creature) => creature.name || "Mob"),
-      });
-    }
-
-    return clicked;
+    return false;
   }
 
   function canUseRune(now = Date.now()) {
@@ -3794,39 +3701,29 @@ window.__minibiaCopilotBundle.installAutoAttackModule = function installAutoAtta
   }
 
   function tryAttack() {
-    if (!config.enabled) {
-      return false;
-    }
+    if (!config.enabled) return false;
 
     const now = Date.now();
-    if (resetTargetIfTooFar()) {
-      return true;
-    }
-
+    if (resetTargetIfTooFar()) return true;
     syncCombatState(now);
 
-    if (config.meleeMode) {
-      const chased = syncMeleeChase(now);
-      if (getCurrentTarget()) {
-        return false;
-      }
+    // Step 1: always try to acquire / preempt to the best target first.
+    triggerAttack(now);
 
-      if (chased) {
-        return triggerAttack(now) || true;
-      }
-    } else {
-      if (syncKite(now)) {
-        if (getCurrentTarget()) return triggerRune(now);
-      } else if (syncRangedChase(now)) {
-        if (getCurrentTarget()) return triggerRune(now);
-      }
-    }
-
+    // Step 2: if we have a target, position ourselves correctly.
     if (getCurrentTarget()) {
-      return triggerRune(now);
+      if (config.meleeMode) {
+        syncMeleeChase(now);
+      } else {
+        if (!syncKite(now)) {
+          syncRangedChase(now);
+        }
+      }
+      // Step 3: optional rune cast (no-op if no rune hotkey configured).
+      triggerRune(now);
     }
 
-    return triggerAttack(now);
+    return true;
   }
 
   function scheduleNextTick() {
@@ -3918,21 +3815,12 @@ window.__minibiaCopilotBundle.installAutoAttackModule = function installAutoAtta
   }
 
   function updateConfig(nextConfig = {}) {
-    if (Object.prototype.hasOwnProperty.call(nextConfig, "targetHotbarSlot")) {
-      nextConfig.targetHotbarSlot = normalizeHotbarSlot(nextConfig.targetHotbarSlot) ?? config.targetHotbarSlot;
-    }
-
     if (Object.prototype.hasOwnProperty.call(nextConfig, "runeHotbarSlot")) {
       nextConfig.runeHotbarSlot = normalizeHotbarSlot(nextConfig.runeHotbarSlot);
     }
 
     if (Object.prototype.hasOwnProperty.call(nextConfig, "maxTargetDistance")) {
       nextConfig.maxTargetDistance = Math.max(1, Math.trunc(Number(nextConfig.maxTargetDistance) || config.maxTargetDistance || 8));
-    }
-
-    if (Object.prototype.hasOwnProperty.call(nextConfig, "targetingStrategy")) {
-      const raw = String(nextConfig.targetingStrategy || "manual").toLowerCase();
-      nextConfig.targetingStrategy = validTargetingStrategies.has(raw) ? raw : "manual";
     }
 
     if (Object.prototype.hasOwnProperty.call(nextConfig, "safeDistance")) {
@@ -11339,37 +11227,22 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
   }
 
   function refreshAttackPriorityUI() {
-    const block = document.getElementById("minibia-copilot-attack-priority-block");
     const list = document.getElementById("minibia-copilot-attack-priority-list");
-    const preemptInput = document.getElementById("minibia-copilot-attack-preempt");
-    const strategySelect = document.getElementById("minibia-copilot-auto-attack-strategy");
+    if (!list) return;
 
-    const strategy = String(bot.attack?.config?.targetingStrategy || "manual").toLowerCase();
-    if (block) block.hidden = strategy !== "priority";
-
-    if (strategySelect && document.activeElement !== strategySelect) {
-      strategySelect.value = strategy;
-    }
-
-    if (preemptInput && document.activeElement !== preemptInput) {
-      preemptInput.checked = bot.attack?.config?.preemptPriority !== false;
-    }
-
-    if (list) {
-      const names = bot.attack?.getPriorityTargets?.() || [];
-      if (!names.length) {
-        list.innerHTML = '<div class="mc-small-note">No priority targets yet. Add a monster name above.</div>';
-      } else {
-        list.innerHTML = names.map((name, index) => (
-          `<div class="mc-priority-row" data-name="${escapeHtml(name)}">` +
-            `<span class="mc-priority-rank">${index + 1}.</span>` +
-            `<span class="mc-priority-name">${escapeHtml(name)}</span>` +
-            `<button type="button" class="mc-small-button" data-attack-priority-up="${escapeHtml(name)}" title="Move up">↑</button>` +
-            `<button type="button" class="mc-small-button" data-attack-priority-down="${escapeHtml(name)}" title="Move down">↓</button>` +
-            `<button type="button" class="mc-small-button" data-attack-priority-remove="${escapeHtml(name)}" title="Remove">✕</button>` +
-          `</div>`
-        )).join("");
-      }
+    const names = bot.attack?.getPriorityTargets?.() || [];
+    if (!names.length) {
+      list.innerHTML = '<div class="mc-small-note">No priority targets yet. Add a monster name above.</div>';
+    } else {
+      list.innerHTML = names.map((name, index) => (
+        `<div class="mc-priority-row" data-name="${escapeHtml(name)}">` +
+          `<span class="mc-priority-rank">${index + 1}.</span>` +
+          `<span class="mc-priority-name">${escapeHtml(name)}</span>` +
+          `<button type="button" class="mc-small-button" data-attack-priority-up="${escapeHtml(name)}" title="Move up">↑</button>` +
+          `<button type="button" class="mc-small-button" data-attack-priority-down="${escapeHtml(name)}" title="Move down">↓</button>` +
+          `<button type="button" class="mc-small-button" data-attack-priority-remove="${escapeHtml(name)}" title="Remove">✕</button>` +
+        `</div>`
+      )).join("");
     }
   }
 
@@ -12668,59 +12541,42 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
                 <input type="checkbox" id="minibia-copilot-auto-attack-melee" />
                 <span>Melee Mode</span>
               </label>
-              <label class="mc-field" for="minibia-copilot-auto-attack-strategy">
-                <span class="mc-field-label">Targeting</span>
-                <select id="minibia-copilot-auto-attack-strategy">
-                  <option value="manual">Manual hotkey only</option>
-                  <option value="nearest">Attack nearest monster</option>
-                  <option value="highest-hp">Attack highest HP</option>
-                  <option value="lowest-hp">Attack lowest HP</option>
-                  <option value="cycle">Cycle target monster</option>
-                  <option value="priority">Priority list</option>
-                </select>
-              </label>
-              <div class="mc-priority-block" id="minibia-copilot-attack-priority-block" hidden>
+              <div class="mc-priority-block">
                 <div class="mc-field-label">Priority Targets (top = first)</div>
                 <div class="mc-inline">
                   <input type="text" id="minibia-copilot-attack-priority-input" placeholder="Monster name" />
                   <button type="button" class="mc-small-button" id="minibia-copilot-attack-priority-add">Add</button>
                 </div>
                 <div class="mc-list" id="minibia-copilot-attack-priority-list"></div>
-                <label class="mc-toggle">
-                  <input type="checkbox" id="minibia-copilot-attack-preempt" />
-                  <span>Switch to higher-priority mid-fight</span>
-                </label>
-                <div class="mc-small-note">Anything not in the list is attacked last (nearest first). Names are case-insensitive.</div>
+                <div class="mc-small-note">Adjacent monsters always get attacked first (so blockers die), then priority list, then nearest. Case-insensitive.</div>
               </div>
               <div class="mc-field-grid">
-                <label class="mc-field" for="minibia-copilot-auto-attack-hotkey">
-                  <span class="mc-field-label">Target Hotkey (1-12)</span>
-                  <input type="number" id="minibia-copilot-auto-attack-hotkey" min="1" max="12" placeholder="3" />
+                <label class="mc-field" for="minibia-copilot-auto-attack-range">
+                  <span class="mc-field-label">Chase within (sqm)</span>
+                  <input type="number" id="minibia-copilot-auto-attack-range" min="1" max="8" placeholder="8" />
                 </label>
-                <label class="mc-field" for="minibia-copilot-auto-attack-rune-hotkey">
-                  <span class="mc-field-label">Rune Hotkey (1-12)</span>
-                  <input type="number" id="minibia-copilot-auto-attack-rune-hotkey" min="1" max="12" placeholder="4" />
-                </label>
-              </div>
-              <div class="mc-field-grid">
                 <label class="mc-field" for="minibia-copilot-auto-attack-safe-distance">
-                  <span class="mc-field-label">Kite distance (sqm)</span>
+                  <span class="mc-field-label">Kite when closer than</span>
                   <input type="number" id="minibia-copilot-auto-attack-safe-distance" min="1" max="7" placeholder="4" />
                 </label>
-                <label class="mc-field" for="minibia-copilot-auto-attack-range">
-                  <span class="mc-field-label">Attack range (sqm)</span>
-                  <input type="number" id="minibia-copilot-auto-attack-range" min="1" max="8" placeholder="5" />
-                </label>
-                <label class="mc-toggle" style="align-self:end;">
-                  <input type="checkbox" id="minibia-copilot-auto-attack-kite" />
-                  <span>Kite (non-melee)</span>
-                </label>
-                <label class="mc-toggle" style="align-self:end;">
-                  <input type="checkbox" id="minibia-copilot-auto-attack-chase" />
-                  <span>Chase (non-melee)</span>
-                </label>
               </div>
-              <div class="mc-small-note">Strategy "Manual" uses your hotkey. The other modes call the in-game action directly so no hotkey binding is needed. Non-melee: bot walks toward target when farther than Attack range, backs away when closer than Kite distance; in-between it holds position.</div>
+              <details>
+                <summary style="cursor:pointer;color:#8c7a52;font-size:11px;">Advanced (rune hotkey, kite/chase toggles)</summary>
+                <div class="mc-stack" style="margin-top:6px;">
+                  <label class="mc-field" for="minibia-copilot-auto-attack-rune-hotkey">
+                    <span class="mc-field-label">Rune Hotkey (1-12)</span>
+                    <input type="number" id="minibia-copilot-auto-attack-rune-hotkey" min="1" max="12" placeholder="optional" />
+                  </label>
+                  <label class="mc-toggle">
+                    <input type="checkbox" id="minibia-copilot-auto-attack-kite" />
+                    <span>Kite when too close (non-melee)</span>
+                  </label>
+                  <label class="mc-toggle">
+                    <input type="checkbox" id="minibia-copilot-auto-attack-chase" />
+                    <span>Chase fleeing targets (non-melee)</span>
+                  </label>
+                </div>
+              </details>
             </div>
           </div>
 
@@ -13179,9 +13035,7 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
     const autoHealManaHotkeyInput = panel.querySelector("#minibia-copilot-auto-heal-mana-hotkey");
     const autoAttackEnabledInput = panel.querySelector("#minibia-copilot-auto-attack-enabled");
     const autoAttackMeleeInput = panel.querySelector("#minibia-copilot-auto-attack-melee");
-    const autoAttackHotkeyInput = panel.querySelector("#minibia-copilot-auto-attack-hotkey");
     const autoAttackRuneHotkeyInput = panel.querySelector("#minibia-copilot-auto-attack-rune-hotkey");
-    const autoAttackStrategyInput = panel.querySelector("#minibia-copilot-auto-attack-strategy");
     const autoAttackSafeDistanceInput = panel.querySelector("#minibia-copilot-auto-attack-safe-distance");
     const autoAttackKiteInput = panel.querySelector("#minibia-copilot-auto-attack-kite");
     const autoAttackRangeInput = panel.querySelector("#minibia-copilot-auto-attack-range");
@@ -13859,15 +13713,6 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
       });
     }
 
-    if (autoAttackHotkeyInput) {
-      autoAttackHotkeyInput.value = String(bot.attack?.config?.targetHotbarSlot ?? 3);
-      autoAttackHotkeyInput.addEventListener("change", () => {
-        const targetHotbarSlot = Math.min(12, Math.max(1, Number(autoAttackHotkeyInput.value) || 1));
-        autoAttackHotkeyInput.value = String(targetHotbarSlot);
-        bot.attack.updateConfig({ targetHotbarSlot });
-      });
-    }
-
     if (autoAttackRuneHotkeyInput) {
       autoAttackRuneHotkeyInput.value = bot.attack?.config?.runeHotbarSlot
         ? String(bot.attack.config.runeHotbarSlot)
@@ -13889,18 +13734,9 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
       });
     }
 
-    if (autoAttackStrategyInput) {
-      autoAttackStrategyInput.value = String(bot.attack?.config?.targetingStrategy || "manual");
-      autoAttackStrategyInput.addEventListener("change", () => {
-        bot.attack.updateConfig({ targetingStrategy: autoAttackStrategyInput.value });
-        refreshAttackPriorityUI();
-      });
-    }
-
     const attackPriorityInput = panel.querySelector("#minibia-copilot-attack-priority-input");
     const attackPriorityAddButton = panel.querySelector("#minibia-copilot-attack-priority-add");
     const attackPriorityList = panel.querySelector("#minibia-copilot-attack-priority-list");
-    const attackPreemptInput = panel.querySelector("#minibia-copilot-attack-preempt");
 
     function addPriorityFromInput() {
       const name = attackPriorityInput?.value?.trim() || "";
@@ -13944,12 +13780,6 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
       });
     }
 
-    if (attackPreemptInput) {
-      attackPreemptInput.addEventListener("change", () => {
-        bot.attack?.updateConfig?.({ preemptPriority: attackPreemptInput.checked });
-      });
-    }
-
     refreshAttackPriorityUI();
 
     if (autoAttackSafeDistanceInput) {
@@ -13987,22 +13817,17 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
     if (autoAttackEnabledInput) {
       autoAttackEnabledInput.checked = !!bot.attack?.status?.().running;
       autoAttackEnabledInput.addEventListener("change", () => {
-        const targetHotbarSlot = Math.min(
-          12,
-          Math.max(1, Number(autoAttackHotkeyInput?.value) || bot.attack.config.targetHotbarSlot || 1)
-        );
         const runeHotbarSlot = (() => {
           const rawValue = Number(autoAttackRuneHotkeyInput?.value);
           if (Number.isFinite(rawValue) && rawValue >= 1 && rawValue <= 12) {
             return Math.trunc(rawValue);
           }
-
           return bot.attack.config.runeHotbarSlot ?? null;
         })();
         const meleeMode = !!autoAttackMeleeInput?.checked;
 
         if (autoAttackEnabledInput.checked) {
-          bot.attack.start({ targetHotbarSlot, runeHotbarSlot, meleeMode });
+          bot.attack.start({ runeHotbarSlot, meleeMode });
         } else {
           bot.attack.stop();
         }
