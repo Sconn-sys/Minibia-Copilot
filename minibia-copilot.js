@@ -3086,6 +3086,29 @@ window.__minibiaCopilotBundle.installAutoAttackModule = function installAutoAtta
     return Number.isFinite(getPriorityIndex(monster));
   }
 
+  function compareCandidatesByPriority(left, right, playerPosition) {
+    const leftDistance = getTileDistance(
+      playerPosition,
+      normalizePosition(left?.getPosition?.() || left?.__position)
+    );
+    const rightDistance = getTileDistance(
+      playerPosition,
+      normalizePosition(right?.getPosition?.() || right?.__position)
+    );
+
+    const leftBlocker = leftDistance <= 1;
+    const rightBlocker = rightDistance <= 1;
+    if (leftBlocker !== rightBlocker) return leftBlocker ? -1 : 1;
+    if (leftBlocker && rightBlocker) {
+      return leftDistance - rightDistance || Number(left?.id || 0) - Number(right?.id || 0);
+    }
+
+    const priorityDelta = getPriorityIndex(left) - getPriorityIndex(right);
+    if (priorityDelta !== 0) return priorityDelta;
+
+    return leftDistance - rightDistance || Number(left?.id || 0) - Number(right?.id || 0);
+  }
+
   function getMonsterCandidates(now = Date.now()) {
     pruneSkippedTargets(now);
 
@@ -3095,8 +3118,7 @@ window.__minibiaCopilotBundle.installAutoAttackModule = function installAutoAtta
       .filter((monster) => !isTargetSkipped(monster, now))
       .sort((left, right) => {
         if (usePriority) {
-          const priorityDelta = getPriorityIndex(left) - getPriorityIndex(right);
-          if (priorityDelta !== 0) return priorityDelta;
+          return compareCandidatesByPriority(left, right, playerPosition);
         }
         const leftDistance = getTileDistance(playerPosition, normalizePosition(left?.getPosition?.() || left?.__position));
         const rightDistance = getTileDistance(playerPosition, normalizePosition(right?.getPosition?.() || right?.__position));
@@ -3478,21 +3500,33 @@ window.__minibiaCopilotBundle.installAutoAttackModule = function installAutoAtta
 
     if (strategy === "priority" && config.preemptPriority && getCurrentTarget()) {
       const currentTarget = getCurrentTarget();
-      const currentPriority = getPriorityIndex(currentTarget);
       const candidates = getMonsterCandidates(now);
       const bestCandidate = candidates[0];
+      const playerPosition = normalizePosition(bot.getPlayerPosition());
       if (
         bestCandidate &&
-        isPriorityMonster(bestCandidate) &&
-        getPriorityIndex(bestCandidate) < currentPriority &&
-        !isSameCreature(bestCandidate, currentTarget)
+        !isSameCreature(bestCandidate, currentTarget) &&
+        playerPosition &&
+        compareCandidatesByPriority(bestCandidate, currentTarget, playerPosition) < 0
       ) {
         if (setCurrentTarget(bestCandidate)) {
           state.lastTargetHotkeyAt = now;
           markCombatActive(now);
-          bot.log("preempting to higher-priority target", {
+          const currentDistance = getTileDistance(
+            playerPosition,
+            normalizePosition(currentTarget?.getPosition?.() || currentTarget?.__position)
+          );
+          const bestDistance = getTileDistance(
+            playerPosition,
+            normalizePosition(bestCandidate?.getPosition?.() || bestCandidate?.__position)
+          );
+          const reason = bestDistance <= 1 && currentDistance > 1
+            ? "adjacent blocker"
+            : "higher priority";
+          bot.log("preempting target", {
             from: currentTarget?.name || "Mob",
             to: bestCandidate.name || "Mob",
+            reason,
             priorityIndex: getPriorityIndex(bestCandidate),
           });
           return true;
