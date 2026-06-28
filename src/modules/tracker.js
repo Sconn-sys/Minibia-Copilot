@@ -204,16 +204,29 @@ window.__minibiaCopilotBundle.installTrackerModule = function installTrackerModu
   }
 
   async function fetchAny(url) {
+    const headers = {
+      "Accept": "application/json, text/html;q=0.9, */*;q=0.5",
+      "X-Requested-With": "XMLHttpRequest",
+    };
+    try {
+      const sameOrigin = String(window.location?.origin || "").startsWith("http");
+      if (sameOrigin) headers["Referer"] = window.location.href;
+    } catch (error) {}
+
     const response = await fetch(url, {
       credentials: "include",
-      headers: { "Accept": "application/json, text/html;q=0.9, */*;q=0.5" },
+      headers,
       cache: "no-store",
+      mode: "same-origin",
+      redirect: "follow",
     });
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status} fetching ${url}`);
-    }
     const contentType = String(response.headers.get("content-type") || "");
     const text = await response.text();
+    if (!response.ok) {
+      const snippet = text ? text.slice(0, 120).replace(/\s+/g, " ") : "";
+      const cfRay = response.headers.get("cf-ray") || "";
+      throw new Error(`HTTP ${response.status} fetching ${url}${cfRay ? ` (cf-ray ${cfRay})` : ""}${snippet ? ` — ${snippet}` : ""}`);
+    }
     let json = null;
     if (contentType.includes("application/json")) {
       try { json = JSON.parse(text); } catch (error) {}
