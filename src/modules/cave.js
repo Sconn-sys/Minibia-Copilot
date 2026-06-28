@@ -70,6 +70,7 @@ window.__minibiaCopilotBundle.installCaveModule = function installCaveModule(bot
       waypointTolerance: 0,
       idleSnapMs: 2000,
       monsterPauseRange: 10,
+      combatStallMs: 1500,
       enabled: false,
       activePresetName: defaultPresetName,
     },
@@ -1584,38 +1585,48 @@ window.__minibiaCopilotBundle.installCaveModule = function installCaveModule(bot
       const position = normalizePosition(bot.getPlayerPosition());
       const positionKey = getPositionKey(position);
       const now = Date.now();
+
+      // Always update lastProgressAt whenever the player actually moves,
+      // regardless of combat pause state. This is what the combat-stall
+      // detector below uses to decide whether to force-resume.
+      if (positionKey && positionKey !== state.lastPositionKey) {
+        state.lastPositionKey = positionKey;
+        state.lastProgressAt = now;
+      }
+
       const playerHasTarget = !!window.gameClient?.player?.__target;
       const attackStatus = bot.attack?.status?.() || null;
       const reachableMonsters = getReachableMonsterCount();
-      const shouldPauseForCombat =
+      const combatVisible =
         playerHasTarget ||
         reachableMonsters > 0 ||
         (!!attackStatus?.combatActive && Number(attackStatus?.combatDurationMs || 0) < 60000);
 
-      if (shouldPauseForCombat) {
+      const combatStallMs = Math.max(1000, Math.min(5000, Number(config.combatStallMs) || 1500));
+      const stalledForMs = state.lastProgressAt ? (now - state.lastProgressAt) : 0;
+      const combatStalled = combatVisible && stalledForMs >= combatStallMs;
+
+      if (combatVisible && !combatStalled) {
         if (!state.pausedForCombat) {
           state.pausedForCombat = true;
-          state.lastProgressAt = now;
           bot.log("cave paused for combat", {
             playerHasTarget,
             reachableMonsters,
             combatDurationMs: Number(attackStatus?.combatDurationMs || 0),
-            targetCount: Number(attackStatus?.targetCount || 0),
           });
         }
         return;
       }
 
-      if (state.pausedForCombat) {
-        state.pausedForCombat = false;
-        state.lastProgressAt = now;
-        bot.log("cave resumed after combat — no reachable monsters", {
-          combatDurationMs: Number(attackStatus?.combatDurationMs || 0),
+      if (combatStalled && state.pausedForCombat) {
+        bot.log("cave resuming — combat stalled, moving anyway", {
+          stalledForMs,
+          combatStallMs,
         });
       }
 
-      if (positionKey && positionKey !== state.lastPositionKey) {
-        state.lastPositionKey = positionKey;
+      if (state.pausedForCombat) {
+        state.pausedForCombat = false;
         state.lastProgressAt = now;
       }
 
