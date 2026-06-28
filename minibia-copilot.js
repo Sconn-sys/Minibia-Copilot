@@ -3547,18 +3547,32 @@ window.__minibiaCopilotBundle.installAutoAttackModule = function installAutoAtta
     const targetPosition = normalizePosition(target.getPosition?.() || target.__position);
     if (!playerPosition || !targetPosition || playerPosition.z !== targetPosition.z) return false;
 
+    const attackRange = Math.max(1, Math.min(8, Number(config.attackRange) || 5));
     const safeDistance = Math.max(1, Math.min(7, Number(config.safeDistance) || 4));
     const currentDistance = getTileDistance(playerPosition, targetPosition);
 
     // Kite handles too-close situations and we don't want to override its flee path.
     if (currentDistance < safeDistance) return false;
 
-    // Always call setCurrentFollowTarget; its built-in throttle re-fires the
-    // FollowPacket every 500ms so the server keeps pursuing fleeing creatures
-    // even if it dropped the follow between updates.
-    setCurrentFollowTarget(target);
-    state.lastChaseAt = now;
-    return true;
+    // Out of range — chase. Hysteresis (attackRange + 1) prevents 1-tile
+    // toggling at the boundary.
+    if (currentDistance > attackRange + 1) {
+      setCurrentFollowTarget(target);
+      state.lastChaseAt = now;
+      return true;
+    }
+
+    // In attack range — stop walking so weapon/spell can fire. If we were
+    // following this target, drop follow so the server stops walking us into it.
+    if (currentDistance <= attackRange) {
+      if (isSameCreature(getCurrentFollowTarget(), target)) {
+        clearCurrentFollowTarget();
+      }
+      return false;
+    }
+
+    // In the hysteresis band — keep whatever state we have.
+    return false;
   }
 
   function syncMeleeChase(now = Date.now()) {
