@@ -32,20 +32,20 @@ window.__minibiaCopilotBundle.installAutoAttackModule = function installAutoAtta
   if (storedConfig.runeCooldownMs === 500) delete storedConfig.runeCooldownMs;
   delete storedConfig.targetingStrategy;
   delete storedConfig.preemptPriority;
+  delete storedConfig.attackRange;
+  delete storedConfig.chaseInNonMelee;
   const config = Object.assign(
     {
       tickMs: 150,
       runeHotbarSlot: null,
       targetCooldownMs: 300,
       runeCooldownMs: 300,
-      maxTargetDistance: 8,
+      maxTargetDistance: 10,
       meleeMode: true,
       enabled: false,
       safeDistance: 4,
       kitingEnabled: true,
       targetPriority: [],
-      attackRange: 5,
-      chaseInNonMelee: true,
     },
     storedConfig
   );
@@ -74,7 +74,26 @@ window.__minibiaCopilotBundle.installAutoAttackModule = function installAutoAtta
   }
 
   function getNearbyMonsters() {
-    return bot.xray?.getVisibleMonsters?.({ sameFloorOnly: true }) || [];
+    // Use the in-game battle list as the source of truth — it's the same
+    // set the player sees as engageable.
+    const battleWindow = window.gameClient?.interface?.windowManager?.getWindow?.("battle-window");
+    const body = typeof battleWindow?.getBody === "function" ? battleWindow.getBody() : null;
+    if (!body) return [];
+
+    const playerId = window.gameClient?.player?.id;
+    const out = [];
+    for (const child of body.children) {
+      const id = Number(child.id);
+      if (!Number.isFinite(id)) continue;
+      const creature = window.gameClient?.world?.getCreature?.(id);
+      if (!creature) continue;
+      if (creature === window.gameClient?.player) continue;
+      // type 1 = monster in Minibia (CONST.TYPES.MONSTER)
+      if (creature.type !== 1) continue;
+      if (creature.masterId === playerId) continue;
+      out.push(creature);
+    }
+    return out;
   }
 
   function normalizePosition(value) {
@@ -585,7 +604,7 @@ window.__minibiaCopilotBundle.installAutoAttackModule = function installAutoAtta
   }
 
   function syncRangedChase(now = Date.now()) {
-    if (config.meleeMode || !config.chaseInNonMelee) return false;
+    if (config.meleeMode) return false;
     const target = getEngagedTarget();
     if (!target) return false;
 
@@ -880,10 +899,6 @@ window.__minibiaCopilotBundle.installAutoAttackModule = function installAutoAtta
 
     if (Object.prototype.hasOwnProperty.call(nextConfig, "safeDistance")) {
       nextConfig.safeDistance = Math.max(1, Math.min(7, Math.trunc(Number(nextConfig.safeDistance) || config.safeDistance || 4)));
-    }
-
-    if (Object.prototype.hasOwnProperty.call(nextConfig, "attackRange")) {
-      nextConfig.attackRange = Math.max(1, Math.min(8, Math.trunc(Number(nextConfig.attackRange) || config.attackRange || 5)));
     }
 
     if (Object.prototype.hasOwnProperty.call(nextConfig, "targetPriority")) {

@@ -2243,30 +2243,20 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
                 <div class="mc-list" id="minibia-copilot-attack-priority-list"></div>
                 <div class="mc-small-note">Adjacent monsters always get attacked first (so blockers die), then priority list, then nearest. Case-insensitive.</div>
               </div>
-              <div class="mc-field-grid">
-                <label class="mc-field" for="minibia-copilot-auto-attack-range">
-                  <span class="mc-field-label">Chase within (sqm)</span>
-                  <input type="number" id="minibia-copilot-auto-attack-range" min="1" max="8" placeholder="8" />
-                </label>
-                <label class="mc-field" for="minibia-copilot-auto-attack-safe-distance">
-                  <span class="mc-field-label">Kite when closer than</span>
-                  <input type="number" id="minibia-copilot-auto-attack-safe-distance" min="1" max="7" placeholder="4" />
-                </label>
-              </div>
+              <label class="mc-toggle">
+                <input type="checkbox" id="minibia-copilot-auto-attack-kite" />
+                <span>Kite when too close (non-melee)</span>
+              </label>
+              <label class="mc-field" for="minibia-copilot-auto-attack-safe-distance">
+                <span class="mc-field-label">Kite distance (sqm)</span>
+                <input type="number" id="minibia-copilot-auto-attack-safe-distance" min="1" max="7" placeholder="4" />
+              </label>
               <details>
-                <summary style="cursor:pointer;color:#8c7a52;font-size:11px;">Advanced (rune hotkey, kite/chase toggles)</summary>
+                <summary style="cursor:pointer;color:#8c7a52;font-size:11px;">Advanced (rune hotkey)</summary>
                 <div class="mc-stack" style="margin-top:6px;">
                   <label class="mc-field" for="minibia-copilot-auto-attack-rune-hotkey">
                     <span class="mc-field-label">Rune Hotkey (1-12)</span>
                     <input type="number" id="minibia-copilot-auto-attack-rune-hotkey" min="1" max="12" placeholder="optional" />
-                  </label>
-                  <label class="mc-toggle">
-                    <input type="checkbox" id="minibia-copilot-auto-attack-kite" />
-                    <span>Kite when too close (non-melee)</span>
-                  </label>
-                  <label class="mc-toggle">
-                    <input type="checkbox" id="minibia-copilot-auto-attack-chase" />
-                    <span>Chase fleeing targets (non-melee)</span>
                   </label>
                 </div>
               </details>
@@ -2731,8 +2721,6 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
     const autoAttackRuneHotkeyInput = panel.querySelector("#minibia-copilot-auto-attack-rune-hotkey");
     const autoAttackSafeDistanceInput = panel.querySelector("#minibia-copilot-auto-attack-safe-distance");
     const autoAttackKiteInput = panel.querySelector("#minibia-copilot-auto-attack-kite");
-    const autoAttackRangeInput = panel.querySelector("#minibia-copilot-auto-attack-range");
-    const autoAttackChaseInput = panel.querySelector("#minibia-copilot-auto-attack-chase");
     const talkEnabledInput = panel.querySelector("#minibia-copilot-talk-enabled");
     const talkApiKeyInput = panel.querySelector("#minibia-copilot-talk-api-key");
     const talkPromptInput = panel.querySelector("#minibia-copilot-talk-prompt");
@@ -3488,22 +3476,6 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
       autoAttackKiteInput.checked = bot.attack?.config?.kitingEnabled !== false;
       autoAttackKiteInput.addEventListener("change", () => {
         bot.attack.updateConfig({ kitingEnabled: autoAttackKiteInput.checked });
-      });
-    }
-
-    if (autoAttackRangeInput) {
-      autoAttackRangeInput.value = String(bot.attack?.config?.attackRange ?? 5);
-      autoAttackRangeInput.addEventListener("change", () => {
-        const attackRange = Math.max(1, Math.min(8, Number(autoAttackRangeInput.value) || 5));
-        autoAttackRangeInput.value = String(attackRange);
-        bot.attack.updateConfig({ attackRange });
-      });
-    }
-
-    if (autoAttackChaseInput) {
-      autoAttackChaseInput.checked = bot.attack?.config?.chaseInNonMelee !== false;
-      autoAttackChaseInput.addEventListener("change", () => {
-        bot.attack.updateConfig({ chaseInNonMelee: autoAttackChaseInput.checked });
       });
     }
 

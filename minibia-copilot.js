@@ -2935,20 +2935,20 @@ window.__minibiaCopilotBundle.installAutoAttackModule = function installAutoAtta
   if (storedConfig.runeCooldownMs === 500) delete storedConfig.runeCooldownMs;
   delete storedConfig.targetingStrategy;
   delete storedConfig.preemptPriority;
+  delete storedConfig.attackRange;
+  delete storedConfig.chaseInNonMelee;
   const config = Object.assign(
     {
       tickMs: 150,
       runeHotbarSlot: null,
       targetCooldownMs: 300,
       runeCooldownMs: 300,
-      maxTargetDistance: 8,
+      maxTargetDistance: 10,
       meleeMode: true,
       enabled: false,
       safeDistance: 4,
       kitingEnabled: true,
       targetPriority: [],
-      attackRange: 5,
-      chaseInNonMelee: true,
     },
     storedConfig
   );
@@ -2977,7 +2977,26 @@ window.__minibiaCopilotBundle.installAutoAttackModule = function installAutoAtta
   }
 
   function getNearbyMonsters() {
-    return bot.xray?.getVisibleMonsters?.({ sameFloorOnly: true }) || [];
+    // Use the in-game battle list as the source of truth — it's the same
+    // set the player sees as engageable.
+    const battleWindow = window.gameClient?.interface?.windowManager?.getWindow?.("battle-window");
+    const body = typeof battleWindow?.getBody === "function" ? battleWindow.getBody() : null;
+    if (!body) return [];
+
+    const playerId = window.gameClient?.player?.id;
+    const out = [];
+    for (const child of body.children) {
+      const id = Number(child.id);
+      if (!Number.isFinite(id)) continue;
+      const creature = window.gameClient?.world?.getCreature?.(id);
+      if (!creature) continue;
+      if (creature === window.gameClient?.player) continue;
+      // type 1 = monster in Minibia (CONST.TYPES.MONSTER)
+      if (creature.type !== 1) continue;
+      if (creature.masterId === playerId) continue;
+      out.push(creature);
+    }
+    return out;
   }
 
   function normalizePosition(value) {
@@ -3488,7 +3507,7 @@ window.__minibiaCopilotBundle.installAutoAttackModule = function installAutoAtta
   }
 
   function syncRangedChase(now = Date.now()) {
-    if (config.meleeMode || !config.chaseInNonMelee) return false;
+    if (config.meleeMode) return false;
     const target = getEngagedTarget();
     if (!target) return false;
 
@@ -3783,10 +3802,6 @@ window.__minibiaCopilotBundle.installAutoAttackModule = function installAutoAtta
 
     if (Object.prototype.hasOwnProperty.call(nextConfig, "safeDistance")) {
       nextConfig.safeDistance = Math.max(1, Math.min(7, Math.trunc(Number(nextConfig.safeDistance) || config.safeDistance || 4)));
-    }
-
-    if (Object.prototype.hasOwnProperty.call(nextConfig, "attackRange")) {
-      nextConfig.attackRange = Math.max(1, Math.min(8, Math.trunc(Number(nextConfig.attackRange) || config.attackRange || 5)));
     }
 
     if (Object.prototype.hasOwnProperty.call(nextConfig, "targetPriority")) {
@@ -12519,30 +12534,20 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
                 <div class="mc-list" id="minibia-copilot-attack-priority-list"></div>
                 <div class="mc-small-note">Adjacent monsters always get attacked first (so blockers die), then priority list, then nearest. Case-insensitive.</div>
               </div>
-              <div class="mc-field-grid">
-                <label class="mc-field" for="minibia-copilot-auto-attack-range">
-                  <span class="mc-field-label">Chase within (sqm)</span>
-                  <input type="number" id="minibia-copilot-auto-attack-range" min="1" max="8" placeholder="8" />
-                </label>
-                <label class="mc-field" for="minibia-copilot-auto-attack-safe-distance">
-                  <span class="mc-field-label">Kite when closer than</span>
-                  <input type="number" id="minibia-copilot-auto-attack-safe-distance" min="1" max="7" placeholder="4" />
-                </label>
-              </div>
+              <label class="mc-toggle">
+                <input type="checkbox" id="minibia-copilot-auto-attack-kite" />
+                <span>Kite when too close (non-melee)</span>
+              </label>
+              <label class="mc-field" for="minibia-copilot-auto-attack-safe-distance">
+                <span class="mc-field-label">Kite distance (sqm)</span>
+                <input type="number" id="minibia-copilot-auto-attack-safe-distance" min="1" max="7" placeholder="4" />
+              </label>
               <details>
-                <summary style="cursor:pointer;color:#8c7a52;font-size:11px;">Advanced (rune hotkey, kite/chase toggles)</summary>
+                <summary style="cursor:pointer;color:#8c7a52;font-size:11px;">Advanced (rune hotkey)</summary>
                 <div class="mc-stack" style="margin-top:6px;">
                   <label class="mc-field" for="minibia-copilot-auto-attack-rune-hotkey">
                     <span class="mc-field-label">Rune Hotkey (1-12)</span>
                     <input type="number" id="minibia-copilot-auto-attack-rune-hotkey" min="1" max="12" placeholder="optional" />
-                  </label>
-                  <label class="mc-toggle">
-                    <input type="checkbox" id="minibia-copilot-auto-attack-kite" />
-                    <span>Kite when too close (non-melee)</span>
-                  </label>
-                  <label class="mc-toggle">
-                    <input type="checkbox" id="minibia-copilot-auto-attack-chase" />
-                    <span>Chase fleeing targets (non-melee)</span>
                   </label>
                 </div>
               </details>
@@ -13007,8 +13012,6 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
     const autoAttackRuneHotkeyInput = panel.querySelector("#minibia-copilot-auto-attack-rune-hotkey");
     const autoAttackSafeDistanceInput = panel.querySelector("#minibia-copilot-auto-attack-safe-distance");
     const autoAttackKiteInput = panel.querySelector("#minibia-copilot-auto-attack-kite");
-    const autoAttackRangeInput = panel.querySelector("#minibia-copilot-auto-attack-range");
-    const autoAttackChaseInput = panel.querySelector("#minibia-copilot-auto-attack-chase");
     const talkEnabledInput = panel.querySelector("#minibia-copilot-talk-enabled");
     const talkApiKeyInput = panel.querySelector("#minibia-copilot-talk-api-key");
     const talkPromptInput = panel.querySelector("#minibia-copilot-talk-prompt");
@@ -13764,22 +13767,6 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
       autoAttackKiteInput.checked = bot.attack?.config?.kitingEnabled !== false;
       autoAttackKiteInput.addEventListener("change", () => {
         bot.attack.updateConfig({ kitingEnabled: autoAttackKiteInput.checked });
-      });
-    }
-
-    if (autoAttackRangeInput) {
-      autoAttackRangeInput.value = String(bot.attack?.config?.attackRange ?? 5);
-      autoAttackRangeInput.addEventListener("change", () => {
-        const attackRange = Math.max(1, Math.min(8, Number(autoAttackRangeInput.value) || 5));
-        autoAttackRangeInput.value = String(attackRange);
-        bot.attack.updateConfig({ attackRange });
-      });
-    }
-
-    if (autoAttackChaseInput) {
-      autoAttackChaseInput.checked = bot.attack?.config?.chaseInNonMelee !== false;
-      autoAttackChaseInput.addEventListener("change", () => {
-        bot.attack.updateConfig({ chaseInNonMelee: autoAttackChaseInput.checked });
       });
     }
 
