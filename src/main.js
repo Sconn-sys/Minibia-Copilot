@@ -43,6 +43,7 @@
     ["hunt", "minibiaCopilot.hunt.config"],
     ["tracker", "minibiaCopilot.tracker.config"],
     ["alphaWatch", "minibiaCopilot.alphaWatch.config"],
+    ["lootbag", "minibiaCopilot.lootbag.config"],
   ];
 
   function getPersistedEnabledSnapshot(bot) {
@@ -113,6 +114,7 @@
     currentBundle.installTrackerModule(bot);
     currentBundle.installAlphaWatchModule(bot);
     currentBundle.installFightEstimatorModule(bot);
+    currentBundle.installLootbagModule(bot);
     currentBundle.installPanel(bot);
 
     bot.ui.inject();
@@ -142,6 +144,7 @@
       tracker: bot.tracker.status(),
       alphaWatch: bot.alphaWatch.status(),
       fightEstimator: bot.fightEstimator.status(),
+      lootbag: bot.lootbag.status(),
     });
 
     window.minibiaCopilot = bot;

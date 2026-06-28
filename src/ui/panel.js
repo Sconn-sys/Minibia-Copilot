@@ -878,6 +878,47 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
     `;
   }
 
+  function refreshLootbagStatus() {
+    const status = bot.lootbag?.status?.();
+    if (!status) return;
+
+    const enabledInput = document.getElementById("minibia-copilot-lootbag-enabled");
+    const list = document.getElementById("minibia-copilot-lootbag-list");
+    const statusLabel = document.getElementById("minibia-copilot-lootbag-status");
+
+    if (enabledInput && document.activeElement !== enabledInput) {
+      enabledInput.checked = !!status.running;
+    }
+
+    if (statusLabel) {
+      const itemCount = status.itemCount || 0;
+      if (!status.running) {
+        statusLabel.textContent = `Status: idle (${itemCount} item${itemCount === 1 ? "" : "s"} configured)`;
+      } else if (!itemCount) {
+        statusLabel.textContent = "Status: running but no items configured";
+      } else if (status.droppedSinceStart) {
+        const last = status.lastDroppedName ? ` — last: ${status.lastDroppedName}` : "";
+        statusLabel.textContent = `Status: dropped ${status.droppedSinceStart} this session${last}`;
+      } else {
+        statusLabel.textContent = `Status: watching (${itemCount} item${itemCount === 1 ? "" : "s"})`;
+      }
+    }
+
+    if (list) {
+      const items = bot.lootbag?.getItems?.() || [];
+      if (!items.length) {
+        list.innerHTML = '<div class="mc-small-note">No items configured. Add an item name above (e.g. "small stone").</div>';
+      } else {
+        list.innerHTML = items.map((name) => (
+          `<div class="mc-loot-row" data-name="${escapeHtml(name)}">` +
+            `<span>${escapeHtml(name)}</span>` +
+            `<button type="button" class="mc-small-button" data-lootbag-remove="${escapeHtml(name)}" title="Remove">✕</button>` +
+          `</div>`
+        )).join("");
+      }
+    }
+  }
+
   function refreshAttackPriorityUI() {
     const block = document.getElementById("minibia-copilot-attack-priority-block");
     const list = document.getElementById("minibia-copilot-attack-priority-list");
@@ -1627,6 +1668,30 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
         font-size: 11px;
       }
 
+      #minibia-copilot-panel #minibia-copilot-lootbag-list {
+        max-height: 200px;
+        overflow-y: auto;
+        padding-right: 4px;
+        scrollbar-width: thin;
+      }
+
+      #minibia-copilot-panel .mc-loot-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 6px;
+        padding: 5px 8px;
+        border-radius: 6px;
+        background: rgba(50, 30, 8, 0.35);
+        border: 1px solid rgba(224, 200, 148, 0.1);
+        color: #f7eccf;
+      }
+
+      #minibia-copilot-panel .mc-loot-row .mc-small-button {
+        padding: 3px 7px;
+        font-size: 11px;
+      }
+
       #minibia-copilot-tracker-toasts {
         position: fixed;
         z-index: 2147483645;
@@ -2367,6 +2432,27 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
           </div>
 
           <div class="mc-section">
+            <div class="mc-label">Lootbag</div>
+            <div class="mc-stack">
+              <label class="mc-toggle">
+                <input type="checkbox" id="minibia-copilot-lootbag-enabled" />
+                <span>Drop matching items to ground</span>
+              </label>
+              <div class="mc-inline">
+                <input type="text" id="minibia-copilot-lootbag-input" placeholder="Item name" />
+                <button type="button" class="mc-small-button" id="minibia-copilot-lootbag-add">Add</button>
+              </div>
+              <div class="mc-list" id="minibia-copilot-lootbag-list"></div>
+              <div class="mc-actions mc-actions-inline-two">
+                <button type="button" class="mc-small-button" id="minibia-copilot-lootbag-drop-now">Drop Now</button>
+                <button type="button" class="mc-small-button" id="minibia-copilot-lootbag-clear">Clear List</button>
+              </div>
+              <div class="mc-small-note" id="minibia-copilot-lootbag-status">Status: idle</div>
+              <div class="mc-small-note">Scans open backpacks every 1.5s. Items go to the tile under your character. Won't drop while in a PZ. Case-insensitive name match (prefix-aware: "small gold coin" matches "small gold coin (12)").</div>
+            </div>
+          </div>
+
+          <div class="mc-section">
             <div class="mc-label">Magic Wall Timer</div>
             <div class="mc-stack">
               <label class="mc-toggle">
@@ -2589,6 +2675,69 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
     if (fightOpenButton) {
       fightOpenButton.addEventListener("click", () => openFightModal());
     }
+    const lootbagEnabledInput = panel.querySelector("#minibia-copilot-lootbag-enabled");
+    const lootbagInput = panel.querySelector("#minibia-copilot-lootbag-input");
+    const lootbagAddButton = panel.querySelector("#minibia-copilot-lootbag-add");
+    const lootbagList = panel.querySelector("#minibia-copilot-lootbag-list");
+    const lootbagDropNowButton = panel.querySelector("#minibia-copilot-lootbag-drop-now");
+    const lootbagClearButton = panel.querySelector("#minibia-copilot-lootbag-clear");
+
+    if (lootbagEnabledInput) {
+      lootbagEnabledInput.addEventListener("change", () => {
+        if (lootbagEnabledInput.checked) {
+          bot.lootbag?.start?.();
+        } else {
+          bot.lootbag?.stop?.();
+        }
+        refreshLootbagStatus();
+      });
+    }
+
+    function addLootbagItemFromInput() {
+      const name = lootbagInput?.value?.trim() || "";
+      if (!name) return;
+      bot.lootbag?.addItem?.(name);
+      if (lootbagInput) lootbagInput.value = "";
+      refreshLootbagStatus();
+    }
+
+    if (lootbagAddButton) {
+      lootbagAddButton.addEventListener("click", addLootbagItemFromInput);
+    }
+    if (lootbagInput) {
+      lootbagInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          addLootbagItemFromInput();
+        }
+      });
+    }
+
+    if (lootbagList) {
+      lootbagList.addEventListener("click", (event) => {
+        const removeTarget = event.target.closest("[data-lootbag-remove]");
+        if (!removeTarget) return;
+        const name = removeTarget.getAttribute("data-lootbag-remove");
+        if (!name) return;
+        bot.lootbag?.removeItem?.(name);
+        refreshLootbagStatus();
+      });
+    }
+
+    if (lootbagDropNowButton) {
+      lootbagDropNowButton.addEventListener("click", () => {
+        bot.lootbag?.dropNow?.();
+        window.setTimeout(refreshLootbagStatus, 200);
+      });
+    }
+
+    if (lootbagClearButton) {
+      lootbagClearButton.addEventListener("click", () => {
+        bot.lootbag?.updateConfig?.({ items: [] });
+        refreshLootbagStatus();
+      });
+    }
+
     const trackerEnabledInput = panel.querySelector("#minibia-copilot-tracker-enabled");
     const trackerIntervalInput = panel.querySelector("#minibia-copilot-tracker-interval");
     const trackerAddInput = panel.querySelector("#minibia-copilot-tracker-add-input");
@@ -3518,6 +3667,7 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
     refreshHuntStatus();
     refreshTrackerStatus();
     refreshAlphaWatchStatus();
+    refreshLootbagStatus();
     refreshVisibleCreatures();
     refreshCavePresetControls();
     refreshCaveClosestStatus();
@@ -3552,6 +3702,7 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
       refreshPlayerSnapshot();
       refreshStatusPillbar();
       refreshHuntStatus();
+      refreshLootbagStatus();
     }, 1000);
     bot.addCleanup(() => {
       window.clearInterval(snapshotTimerId);
@@ -3595,6 +3746,7 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
     refreshHuntStatus,
     refreshTrackerStatus,
     refreshAlphaWatchStatus,
+    refreshLootbagStatus,
     showTrackerNotification,
     refreshVisibleCreatures,
     refreshCaveClosestStatus,

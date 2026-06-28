@@ -301,6 +301,10 @@ window.__minibiaCopilotBundle.createBot = function createBot() {
         this.equipAmulet.stop({ persistEnabled: false });
       }
 
+      if (this.lootbag?.stop) {
+        this.lootbag.stop({ persistEnabled: false });
+      }
+
       if (this.eat?.stop) {
         this.eat.stop({ persistEnabled: false });
       }
@@ -9849,6 +9853,299 @@ window.__minibiaCopilotBundle.installFightEstimatorModule = function installFigh
 };
 window.__minibiaCopilotBundle = window.__minibiaCopilotBundle || {};
 
+window.__minibiaCopilotBundle.installLootbagModule = function installLootbagModule(bot) {
+  const configStorageKey = "minibiaCopilot.lootbag.config";
+
+  const state = {
+    running: false,
+    timerId: null,
+    lastDropAt: 0,
+    lastDroppedName: null,
+    droppedSinceStart: 0,
+  };
+
+  const config = Object.assign(
+    {
+      enabled: false,
+      tickMs: 1500,
+      dropCooldownMs: 350,
+      maxDropsPerTick: 4,
+      items: [],
+    },
+    bot.storage.get(configStorageKey, {})
+  );
+
+  if (!Array.isArray(config.items)) config.items = [];
+
+  function persistConfig() {
+    bot.storage.set(configStorageKey, { ...config });
+  }
+
+  function normalizeItemName(name) {
+    return String(name || "").trim().toLowerCase();
+  }
+
+  function getEquipment() {
+    return window.gameClient?.player?.equipment || null;
+  }
+
+  function getOpenContainers() {
+    return Array.from(window.gameClient?.player?.__openedContainers || []);
+  }
+
+  function getItemDefinition(item) {
+    if (!item) return null;
+    const gc = window.gameClient;
+    return (
+      gc?.itemDefinitionsByCid?.[item.id] ||
+      gc?.itemDefinitionsBySid?.[item.sid] ||
+      gc?.itemDefinitions?.[item.id] ||
+      null
+    );
+  }
+
+  function getItemName(item) {
+    const def = getItemDefinition(item);
+    return String(def?.properties?.name || item?.name || "").trim();
+  }
+
+  function isMatchingLootItem(item) {
+    if (!item) return false;
+    const itemName = normalizeItemName(getItemName(item));
+    if (!itemName) return false;
+    const list = Array.isArray(config.items) ? config.items : [];
+    for (const wanted of list) {
+      const normalized = normalizeItemName(wanted);
+      if (!normalized) continue;
+      if (itemName === normalized) return true;
+      if (itemName.startsWith(normalized + " ")) return true;
+    }
+    return false;
+  }
+
+  function getPlayerTile() {
+    const player = window.gameClient?.player;
+    if (!player) return null;
+    const position = player.getPosition?.();
+    if (!position) return null;
+    if (typeof Position !== "function") return null;
+    const tile = window.gameClient?.world?.getTileFromWorldPosition?.(
+      new Position(position.x, position.y, position.z)
+    );
+    return tile || null;
+  }
+
+  function findMatchingItems(limit) {
+    const out = [];
+    const containers = getOpenContainers();
+    for (const container of containers) {
+      if (!container?.slots) continue;
+      const slots = container.slots;
+      for (let slotIndex = 0; slotIndex < slots.length; slotIndex += 1) {
+        const item = container.getSlotItem?.(slotIndex);
+        if (!item) continue;
+        if (!isMatchingLootItem(item)) continue;
+        out.push({ container, slotIndex, item });
+        if (out.length >= limit) return out;
+      }
+    }
+    return out;
+  }
+
+  function dropItem(entry, tile, now = Date.now()) {
+    if (!entry || !tile) return false;
+    if (typeof ItemMovePacket !== "function") {
+      bot.log("lootbag: ItemMovePacket unavailable");
+      return false;
+    }
+    const item = entry.item;
+    const count = (typeof item.getCount === "function" ? item.getCount() : item.count) || 1;
+    const from = { which: entry.container, index: entry.slotIndex };
+    const to = { which: tile, index: 0xFF };
+
+    try {
+      window.gameClient.send(new ItemMovePacket(from, to, count));
+    } catch (error) {
+      bot.log("lootbag: drop failed", { name: getItemName(item), error: error?.message || error });
+      return false;
+    }
+
+    state.lastDropAt = now;
+    state.lastDroppedName = getItemName(item);
+    state.droppedSinceStart += 1;
+    bot.log("lootbag: dropped item", {
+      name: state.lastDroppedName,
+      count,
+      slot: entry.slotIndex,
+    });
+    return true;
+  }
+
+  function tick() {
+    if (!state.running) return;
+
+    try {
+      if (!Array.isArray(config.items) || !config.items.length) return;
+
+      const now = Date.now();
+      if (now - state.lastDropAt < Math.max(0, Number(config.dropCooldownMs) || 0)) return;
+
+      const player = window.gameClient?.player;
+      if (!player) return;
+      if (player.isInProtectionZone?.()) return;
+
+      const tile = getPlayerTile();
+      if (!tile) return;
+
+      const maxDrops = Math.max(1, Math.min(8, Math.trunc(Number(config.maxDropsPerTick) || 4)));
+      const candidates = findMatchingItems(maxDrops);
+      if (!candidates.length) return;
+
+      for (const candidate of candidates) {
+        const dropped = dropItem(candidate, tile, Date.now());
+        if (!dropped) break;
+      }
+    } catch (error) {
+      bot.log("lootbag tick failed", error?.message || error);
+    }
+  }
+
+  function start(overrides = {}) {
+    Object.assign(config, overrides);
+    config.enabled = true;
+    persistConfig();
+    if (state.running) {
+      bot.log("lootbag already running");
+      return false;
+    }
+    state.running = true;
+    state.droppedSinceStart = 0;
+    const interval = Math.max(500, Math.min(15000, Number(config.tickMs) || 1500));
+    state.timerId = window.setInterval(tick, interval);
+    bot.log("lootbag started", { interval, items: config.items.length });
+    return true;
+  }
+
+  function stop(options = {}) {
+    const persistEnabled = options.persistEnabled !== false;
+    state.running = false;
+    if (state.timerId != null) {
+      window.clearInterval(state.timerId);
+      state.timerId = null;
+    }
+    if (persistEnabled) {
+      config.enabled = false;
+      persistConfig();
+    }
+    bot.log("lootbag stopped");
+    return true;
+  }
+
+  function addItem(name, index) {
+    const trimmed = String(name || "").trim();
+    if (!trimmed) return false;
+    const key = trimmed.toLowerCase();
+    const list = Array.isArray(config.items) ? config.items.slice() : [];
+    if (list.some((existing) => existing.toLowerCase() === key)) return false;
+    if (Number.isFinite(Number(index))) {
+      const at = Math.max(0, Math.min(list.length, Math.trunc(Number(index))));
+      list.splice(at, 0, trimmed);
+    } else {
+      list.push(trimmed);
+    }
+    updateConfig({ items: list });
+    return true;
+  }
+
+  function removeItem(name) {
+    const key = String(name || "").trim().toLowerCase();
+    if (!key) return false;
+    const list = Array.isArray(config.items) ? config.items : [];
+    const next = list.filter((existing) => existing.toLowerCase() !== key);
+    if (next.length === list.length) return false;
+    updateConfig({ items: next });
+    return true;
+  }
+
+  function getItems() {
+    return Array.isArray(config.items) ? config.items.slice() : [];
+  }
+
+  function status() {
+    return {
+      running: state.running,
+      config: { ...config },
+      itemCount: config.items?.length || 0,
+      lastDropAt: state.lastDropAt,
+      lastDroppedName: state.lastDroppedName,
+      droppedSinceStart: state.droppedSinceStart,
+    };
+  }
+
+  function updateConfig(nextConfig = {}) {
+    if (Object.prototype.hasOwnProperty.call(nextConfig, "items")) {
+      const list = Array.isArray(nextConfig.items) ? nextConfig.items : [];
+      const seen = new Set();
+      nextConfig.items = [];
+      list.forEach((name) => {
+        const trimmed = String(name || "").trim();
+        const key = trimmed.toLowerCase();
+        if (trimmed && !seen.has(key)) {
+          seen.add(key);
+          nextConfig.items.push(trimmed);
+        }
+      });
+    }
+    if (Object.prototype.hasOwnProperty.call(nextConfig, "tickMs")) {
+      nextConfig.tickMs = Math.max(500, Math.min(15000, Math.trunc(Number(nextConfig.tickMs) || config.tickMs || 1500)));
+    }
+    if (Object.prototype.hasOwnProperty.call(nextConfig, "maxDropsPerTick")) {
+      nextConfig.maxDropsPerTick = Math.max(1, Math.min(8, Math.trunc(Number(nextConfig.maxDropsPerTick) || config.maxDropsPerTick || 4)));
+    }
+
+    Object.assign(config, nextConfig);
+    persistConfig();
+
+    if (state.running && Object.prototype.hasOwnProperty.call(nextConfig, "tickMs")) {
+      if (state.timerId != null) {
+        window.clearInterval(state.timerId);
+      }
+      state.timerId = window.setInterval(tick, config.tickMs);
+    }
+
+    bot.log("lootbag config updated", { items: config.items.length, tickMs: config.tickMs });
+    return { ...config };
+  }
+
+  function dropNow() {
+    const wasRunning = state.running;
+    state.running = true;
+    try { tick(); } finally { state.running = wasRunning; }
+  }
+
+  bot.addCleanup(() => {
+    if (state.timerId != null) {
+      window.clearInterval(state.timerId);
+      state.timerId = null;
+    }
+  });
+
+  if (config.enabled) start();
+
+  bot.lootbag = {
+    start,
+    stop,
+    status,
+    updateConfig,
+    addItem,
+    removeItem,
+    getItems,
+    dropNow,
+    config,
+  };
+};
+window.__minibiaCopilotBundle = window.__minibiaCopilotBundle || {};
+
 window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
   const panelPositionKey = "minibiaCopilot.ui.panelPosition";
   const panelCollapsedKey = "minibiaCopilot.ui.panelCollapsed";
@@ -10727,6 +11024,47 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
     `;
   }
 
+  function refreshLootbagStatus() {
+    const status = bot.lootbag?.status?.();
+    if (!status) return;
+
+    const enabledInput = document.getElementById("minibia-copilot-lootbag-enabled");
+    const list = document.getElementById("minibia-copilot-lootbag-list");
+    const statusLabel = document.getElementById("minibia-copilot-lootbag-status");
+
+    if (enabledInput && document.activeElement !== enabledInput) {
+      enabledInput.checked = !!status.running;
+    }
+
+    if (statusLabel) {
+      const itemCount = status.itemCount || 0;
+      if (!status.running) {
+        statusLabel.textContent = `Status: idle (${itemCount} item${itemCount === 1 ? "" : "s"} configured)`;
+      } else if (!itemCount) {
+        statusLabel.textContent = "Status: running but no items configured";
+      } else if (status.droppedSinceStart) {
+        const last = status.lastDroppedName ? ` — last: ${status.lastDroppedName}` : "";
+        statusLabel.textContent = `Status: dropped ${status.droppedSinceStart} this session${last}`;
+      } else {
+        statusLabel.textContent = `Status: watching (${itemCount} item${itemCount === 1 ? "" : "s"})`;
+      }
+    }
+
+    if (list) {
+      const items = bot.lootbag?.getItems?.() || [];
+      if (!items.length) {
+        list.innerHTML = '<div class="mc-small-note">No items configured. Add an item name above (e.g. "small stone").</div>';
+      } else {
+        list.innerHTML = items.map((name) => (
+          `<div class="mc-loot-row" data-name="${escapeHtml(name)}">` +
+            `<span>${escapeHtml(name)}</span>` +
+            `<button type="button" class="mc-small-button" data-lootbag-remove="${escapeHtml(name)}" title="Remove">✕</button>` +
+          `</div>`
+        )).join("");
+      }
+    }
+  }
+
   function refreshAttackPriorityUI() {
     const block = document.getElementById("minibia-copilot-attack-priority-block");
     const list = document.getElementById("minibia-copilot-attack-priority-list");
@@ -11476,6 +11814,30 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
         font-size: 11px;
       }
 
+      #minibia-copilot-panel #minibia-copilot-lootbag-list {
+        max-height: 200px;
+        overflow-y: auto;
+        padding-right: 4px;
+        scrollbar-width: thin;
+      }
+
+      #minibia-copilot-panel .mc-loot-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 6px;
+        padding: 5px 8px;
+        border-radius: 6px;
+        background: rgba(50, 30, 8, 0.35);
+        border: 1px solid rgba(224, 200, 148, 0.1);
+        color: #f7eccf;
+      }
+
+      #minibia-copilot-panel .mc-loot-row .mc-small-button {
+        padding: 3px 7px;
+        font-size: 11px;
+      }
+
       #minibia-copilot-tracker-toasts {
         position: fixed;
         z-index: 2147483645;
@@ -12216,6 +12578,27 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
           </div>
 
           <div class="mc-section">
+            <div class="mc-label">Lootbag</div>
+            <div class="mc-stack">
+              <label class="mc-toggle">
+                <input type="checkbox" id="minibia-copilot-lootbag-enabled" />
+                <span>Drop matching items to ground</span>
+              </label>
+              <div class="mc-inline">
+                <input type="text" id="minibia-copilot-lootbag-input" placeholder="Item name" />
+                <button type="button" class="mc-small-button" id="minibia-copilot-lootbag-add">Add</button>
+              </div>
+              <div class="mc-list" id="minibia-copilot-lootbag-list"></div>
+              <div class="mc-actions mc-actions-inline-two">
+                <button type="button" class="mc-small-button" id="minibia-copilot-lootbag-drop-now">Drop Now</button>
+                <button type="button" class="mc-small-button" id="minibia-copilot-lootbag-clear">Clear List</button>
+              </div>
+              <div class="mc-small-note" id="minibia-copilot-lootbag-status">Status: idle</div>
+              <div class="mc-small-note">Scans open backpacks every 1.5s. Items go to the tile under your character. Won't drop while in a PZ. Case-insensitive name match (prefix-aware: "small gold coin" matches "small gold coin (12)").</div>
+            </div>
+          </div>
+
+          <div class="mc-section">
             <div class="mc-label">Magic Wall Timer</div>
             <div class="mc-stack">
               <label class="mc-toggle">
@@ -12438,6 +12821,69 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
     if (fightOpenButton) {
       fightOpenButton.addEventListener("click", () => openFightModal());
     }
+    const lootbagEnabledInput = panel.querySelector("#minibia-copilot-lootbag-enabled");
+    const lootbagInput = panel.querySelector("#minibia-copilot-lootbag-input");
+    const lootbagAddButton = panel.querySelector("#minibia-copilot-lootbag-add");
+    const lootbagList = panel.querySelector("#minibia-copilot-lootbag-list");
+    const lootbagDropNowButton = panel.querySelector("#minibia-copilot-lootbag-drop-now");
+    const lootbagClearButton = panel.querySelector("#minibia-copilot-lootbag-clear");
+
+    if (lootbagEnabledInput) {
+      lootbagEnabledInput.addEventListener("change", () => {
+        if (lootbagEnabledInput.checked) {
+          bot.lootbag?.start?.();
+        } else {
+          bot.lootbag?.stop?.();
+        }
+        refreshLootbagStatus();
+      });
+    }
+
+    function addLootbagItemFromInput() {
+      const name = lootbagInput?.value?.trim() || "";
+      if (!name) return;
+      bot.lootbag?.addItem?.(name);
+      if (lootbagInput) lootbagInput.value = "";
+      refreshLootbagStatus();
+    }
+
+    if (lootbagAddButton) {
+      lootbagAddButton.addEventListener("click", addLootbagItemFromInput);
+    }
+    if (lootbagInput) {
+      lootbagInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          addLootbagItemFromInput();
+        }
+      });
+    }
+
+    if (lootbagList) {
+      lootbagList.addEventListener("click", (event) => {
+        const removeTarget = event.target.closest("[data-lootbag-remove]");
+        if (!removeTarget) return;
+        const name = removeTarget.getAttribute("data-lootbag-remove");
+        if (!name) return;
+        bot.lootbag?.removeItem?.(name);
+        refreshLootbagStatus();
+      });
+    }
+
+    if (lootbagDropNowButton) {
+      lootbagDropNowButton.addEventListener("click", () => {
+        bot.lootbag?.dropNow?.();
+        window.setTimeout(refreshLootbagStatus, 200);
+      });
+    }
+
+    if (lootbagClearButton) {
+      lootbagClearButton.addEventListener("click", () => {
+        bot.lootbag?.updateConfig?.({ items: [] });
+        refreshLootbagStatus();
+      });
+    }
+
     const trackerEnabledInput = panel.querySelector("#minibia-copilot-tracker-enabled");
     const trackerIntervalInput = panel.querySelector("#minibia-copilot-tracker-interval");
     const trackerAddInput = panel.querySelector("#minibia-copilot-tracker-add-input");
@@ -13367,6 +13813,7 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
     refreshHuntStatus();
     refreshTrackerStatus();
     refreshAlphaWatchStatus();
+    refreshLootbagStatus();
     refreshVisibleCreatures();
     refreshCavePresetControls();
     refreshCaveClosestStatus();
@@ -13401,6 +13848,7 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
       refreshPlayerSnapshot();
       refreshStatusPillbar();
       refreshHuntStatus();
+      refreshLootbagStatus();
     }, 1000);
     bot.addCleanup(() => {
       window.clearInterval(snapshotTimerId);
@@ -13444,6 +13892,7 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
     refreshHuntStatus,
     refreshTrackerStatus,
     refreshAlphaWatchStatus,
+    refreshLootbagStatus,
     showTrackerNotification,
     refreshVisibleCreatures,
     refreshCaveClosestStatus,
@@ -13501,6 +13950,7 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
     ["hunt", "minibiaCopilot.hunt.config"],
     ["tracker", "minibiaCopilot.tracker.config"],
     ["alphaWatch", "minibiaCopilot.alphaWatch.config"],
+    ["lootbag", "minibiaCopilot.lootbag.config"],
   ];
 
   function getPersistedEnabledSnapshot(bot) {
@@ -13571,6 +14021,7 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
     currentBundle.installTrackerModule(bot);
     currentBundle.installAlphaWatchModule(bot);
     currentBundle.installFightEstimatorModule(bot);
+    currentBundle.installLootbagModule(bot);
     currentBundle.installPanel(bot);
 
     bot.ui.inject();
@@ -13600,6 +14051,7 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
       tracker: bot.tracker.status(),
       alphaWatch: bot.alphaWatch.status(),
       fightEstimator: bot.fightEstimator.status(),
+      lootbag: bot.lootbag.status(),
     });
 
     window.minibiaCopilot = bot;

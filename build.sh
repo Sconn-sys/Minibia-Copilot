@@ -21,6 +21,7 @@ cat \
   src/modules/tracker.js \
   src/modules/alpha-watch.js \
   src/modules/fight-estimator.js \
+  src/modules/lootbag.js \
   src/ui/panel.js \
   src/main.js \
   > minibia-copilot.js
