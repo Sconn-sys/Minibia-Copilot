@@ -124,6 +124,51 @@ window.__minibiaCopilotBundle.installRuneModule = function installRuneModule(bot
     return reasons.length ? reasons.join("; ") : "unknown";
   }
 
+  function findSpellByWords(words) {
+    const target = String(words || "").trim().toLowerCase();
+    if (!target) return null;
+    let spellsMap = null;
+    try {
+      if (typeof Interface !== "undefined" && Interface?.prototype?.SPELLS) {
+        spellsMap = Interface.prototype.SPELLS;
+      }
+    } catch (error) {}
+    if (!spellsMap) return null;
+    if (typeof spellsMap.forEach !== "function") return null;
+    let found = null;
+    spellsMap.forEach((spell, sid) => {
+      if (found) return;
+      if (String(spell?.words || "").trim().toLowerCase() === target) {
+        found = { sid, spell };
+      }
+    });
+    return found;
+  }
+
+  function castViaSpellbook(match) {
+    const spellbook = window.gameClient?.player?.spellbook;
+    if (!spellbook || typeof spellbook.castSpell !== "function") return false;
+    try {
+      spellbook.castSpell(match.sid);
+      return true;
+    } catch (error) {
+      bot.log("rune spellbook cast threw", { error: error?.message || error });
+      return false;
+    }
+  }
+
+  function castViaDefaultChannel(words) {
+    const channelManager = window.gameClient?.interface?.channelManager;
+    if (!channelManager || typeof channelManager.sendMessageText !== "function") return false;
+    try {
+      channelManager.sendMessageText(words, 0);
+      return true;
+    } catch (error) {
+      bot.log("rune default-channel send threw", { error: error?.message || error });
+      return false;
+    }
+  }
+
   function tryMakeRune() {
     const now = Date.now();
     const gate = getGateStatus(now);
@@ -145,16 +190,38 @@ window.__minibiaCopilotBundle.installRuneModule = function installRuneModule(bot
       state.lastGateReason = null;
     }
 
-    const sent = bot.sendChat(config.runeSpellWords);
-    if (sent) {
-      state.lastRuneAt = now;
-      state.sentSinceStart += 1;
-      bot.log("rune cast sent", { spell: config.runeSpellWords, sentSinceStart: state.sentSinceStart });
-    } else {
-      bot.log("rune sendChat failed (channelManager not ready?)");
+    const match = findSpellByWords(config.runeSpellWords);
+    let castOk = false;
+    let path = "none";
+    if (match) {
+      castOk = castViaSpellbook(match);
+      path = castOk ? "spellbook" : "spellbook-failed";
+    }
+    if (!castOk) {
+      castOk = castViaDefaultChannel(config.runeSpellWords);
+      if (castOk) path = "default-channel";
+    }
+    if (!castOk) {
+      castOk = bot.sendChat(config.runeSpellWords);
+      if (castOk) path = "active-channel-fallback";
     }
 
-    return sent;
+    if (castOk) {
+      state.lastRuneAt = now;
+      state.sentSinceStart += 1;
+      bot.log("rune cast sent", {
+        spell: config.runeSpellWords,
+        spellName: match?.spell?.name || "(custom)",
+        path,
+        sentSinceStart: state.sentSinceStart,
+      });
+    } else {
+      bot.log("rune cast failed — spellbook/channelManager unavailable", {
+        spell: config.runeSpellWords,
+      });
+    }
+
+    return castOk;
   }
 
   function scheduleNextTick() {
