@@ -9204,6 +9204,321 @@ window.__minibiaCopilotBundle.installAlphaWatchModule = function installAlphaWat
 };
 window.__minibiaCopilotBundle = window.__minibiaCopilotBundle || {};
 
+window.__minibiaCopilotBundle.installFightEstimatorModule = function installFightEstimatorModule(bot) {
+  const configStorageKey = "minibiaCopilot.fightEstimator.config";
+  const cacheStorageKey = "minibiaCopilot.fightEstimator.libraryCache";
+
+  const config = Object.assign(
+    {
+      libraryUrl: "/api/library",
+      cacheTtlMs: 30 * 60 * 1000,
+    },
+    bot.storage.get(configStorageKey, {})
+  );
+
+  const state = {
+    monsters: null,
+    monstersByKey: null,
+    fetchedAt: 0,
+    inFlightPromise: null,
+    lastError: null,
+  };
+
+  function loadCache() {
+    const raw = bot.storage.get(cacheStorageKey, null);
+    if (!raw || !Array.isArray(raw.monsters) || !Number.isFinite(raw.fetchedAt)) return false;
+    const age = Date.now() - raw.fetchedAt;
+    if (age > Math.max(60000, Number(config.cacheTtlMs) || 1800000)) return false;
+    state.monsters = raw.monsters;
+    state.fetchedAt = raw.fetchedAt;
+    rebuildIndex();
+    return true;
+  }
+
+  function rebuildIndex() {
+    const index = new Map();
+    (state.monsters || []).forEach((monster) => {
+      if (!monster?.name) return;
+      index.set(String(monster.name).toLowerCase(), monster);
+    });
+    state.monstersByKey = index;
+  }
+
+  async function fetchLibrary({ force = false } = {}) {
+    if (!force && state.monsters && Date.now() - state.fetchedAt < Math.max(60000, Number(config.cacheTtlMs) || 1800000)) {
+      return state.monsters;
+    }
+    if (!force && loadCache()) return state.monsters;
+    if (state.inFlightPromise) return state.inFlightPromise;
+
+    state.inFlightPromise = (async () => {
+      try {
+        const headers = {
+          "Accept": "application/json",
+          "X-Requested-With": "XMLHttpRequest",
+        };
+        try {
+          if (window.location?.href) headers["Referer"] = window.location.href;
+        } catch (error) {}
+        const response = await fetch(config.libraryUrl, {
+          credentials: "include",
+          headers,
+          cache: "no-store",
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status} fetching ${config.libraryUrl}`);
+        const data = await response.json();
+        if (!data || !Array.isArray(data.monsters)) {
+          throw new Error("library response missing monsters array");
+        }
+        state.monsters = data.monsters;
+        state.fetchedAt = Date.now();
+        state.lastError = null;
+        rebuildIndex();
+        try { bot.storage.set(cacheStorageKey, { monsters: state.monsters, fetchedAt: state.fetchedAt }); } catch (error) {}
+        bot.log("fight estimator: library loaded", { count: state.monsters.length });
+        return state.monsters;
+      } catch (error) {
+        state.lastError = error?.message || String(error);
+        bot.log("fight estimator: library fetch failed", { error: state.lastError });
+        throw error;
+      } finally {
+        state.inFlightPromise = null;
+      }
+    })();
+
+    return state.inFlightPromise;
+  }
+
+  function findMonster(name) {
+    if (!name || !state.monstersByKey) return null;
+    return state.monstersByKey.get(String(name).toLowerCase()) || null;
+  }
+
+  function searchMonsters(query, limit = 12) {
+    if (!state.monsters) return [];
+    const q = String(query || "").trim().toLowerCase();
+    if (!q) {
+      return state.monsters
+        .slice()
+        .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")))
+        .slice(0, limit);
+    }
+    const matches = [];
+    for (const monster of state.monsters) {
+      const name = String(monster.name || "");
+      if (!name) continue;
+      const lower = name.toLowerCase();
+      if (lower.startsWith(q)) {
+        matches.push({ monster, score: 0, name });
+      } else if (lower.includes(q)) {
+        matches.push({ monster, score: 1, name });
+      }
+      if (matches.length >= limit * 4) break;
+    }
+    matches.sort((a, b) => a.score - b.score || a.name.localeCompare(b.name));
+    return matches.slice(0, limit).map((m) => m.monster);
+  }
+
+  function avgAttackDamage(attack) {
+    if (!attack || typeof attack !== "object") return 0;
+    const candidates = [
+      [attack.min, attack.max],
+      [attack.minDamage, attack.maxDamage],
+      [attack.damageMin, attack.damageMax],
+      [attack.dmgMin, attack.dmgMax],
+    ];
+    for (const [min, max] of candidates) {
+      if (Number.isFinite(Number(min)) && Number.isFinite(Number(max))) {
+        return (Math.abs(Number(min)) + Math.abs(Number(max))) / 2;
+      }
+    }
+    const flat = [attack.damage, attack.value, attack.avg, attack.average];
+    for (const v of flat) {
+      if (Number.isFinite(Number(v))) return Math.abs(Number(v));
+    }
+    return 0;
+  }
+
+  function attackInterval(attack) {
+    const cd = Number(attack?.cooldown ?? attack?.interval ?? attack?.cd ?? attack?.delay);
+    if (Number.isFinite(cd) && cd > 0) {
+      return cd >= 100 ? cd / 1000 : cd;
+    }
+    return 2;
+  }
+
+  function getAttackElement(attack) {
+    const raw = String(attack?.element || attack?.type || attack?.damageType || attack?.school || "")
+      .trim()
+      .toLowerCase();
+    return raw || null;
+  }
+
+  function isImmune(monster, element) {
+    if (!element || !monster?.immunities) return false;
+    const imm = monster.immunities;
+    if (Array.isArray(imm)) return imm.map((e) => String(e).toLowerCase()).includes(element);
+    if (typeof imm === "object") return !!imm[element];
+    return false;
+  }
+
+  function damagePerSecond(attacker, defender) {
+    const attacks = Array.isArray(attacker?.attacks) ? attacker.attacks : [];
+    if (!attacks.length) {
+      const hp = Number(attacker?.health) || 0;
+      const exp = Number(attacker?.experience) || 0;
+      return Math.max(0, Math.round((hp + exp * 3) / 200));
+    }
+    let total = 0;
+    for (const atk of attacks) {
+      const element = getAttackElement(atk);
+      if (element && isImmune(defender, element)) continue;
+      const avg = avgAttackDamage(atk);
+      if (avg <= 0) continue;
+      const armor = Number(defender?.armor) || 0;
+      const mitigated = Math.max(0, avg - armor * 0.5);
+      const interval = attackInterval(atk);
+      total += mitigated / interval;
+    }
+    return total;
+  }
+
+  function simulate(nameA, nameB) {
+    const a = findMonster(nameA);
+    const b = findMonster(nameB);
+    if (!a || !b) {
+      return {
+        error: !a ? `Unknown monster: ${nameA}` : `Unknown monster: ${nameB}`,
+      };
+    }
+
+    const dpsAB = damagePerSecond(a, b);
+    const dpsBA = damagePerSecond(b, a);
+    const hpA = Math.max(1, Number(a.health) || 1);
+    const hpB = Math.max(1, Number(b.health) || 1);
+
+    const ttkAB = dpsAB > 0 ? hpB / dpsAB : Number.POSITIVE_INFINITY;
+    const ttkBA = dpsBA > 0 ? hpA / dpsBA : Number.POSITIVE_INFINITY;
+
+    let winner;
+    let winnerName;
+    let loserName;
+    let hpRemaining = 0;
+    const reasons = [];
+
+    if (!Number.isFinite(ttkAB) && !Number.isFinite(ttkBA)) {
+      winner = "draw";
+      reasons.push("Neither can damage the other (mutual immunity or zero attacks in the dataset).");
+    } else if (ttkAB < ttkBA) {
+      winner = "a";
+      winnerName = a.name;
+      loserName = b.name;
+      const survivedSeconds = ttkAB;
+      hpRemaining = Math.max(0, hpA - dpsBA * survivedSeconds);
+      reasons.push(`${a.name} kills ${b.name} in ~${ttkAB.toFixed(1)}s; ${b.name} would have needed ~${Number.isFinite(ttkBA) ? ttkBA.toFixed(1) + "s" : "infinity"}.`);
+    } else if (ttkBA < ttkAB) {
+      winner = "b";
+      winnerName = b.name;
+      loserName = a.name;
+      const survivedSeconds = ttkBA;
+      hpRemaining = Math.max(0, hpB - dpsAB * survivedSeconds);
+      reasons.push(`${b.name} kills ${a.name} in ~${ttkBA.toFixed(1)}s; ${a.name} would have needed ~${Number.isFinite(ttkAB) ? ttkAB.toFixed(1) + "s" : "infinity"}.`);
+    } else {
+      winner = "draw";
+      winnerName = null;
+      loserName = null;
+      reasons.push("Both reach 0 HP at the same time.");
+    }
+
+    if (a.armor || b.armor) {
+      reasons.push(`Armor reduces incoming damage (${a.name}: ${a.armor || 0}, ${b.name}: ${b.armor || 0}).`);
+    }
+
+    const aImmList = listImmunities(a);
+    const bImmList = listImmunities(b);
+    if (aImmList.length) reasons.push(`${a.name} immune to: ${aImmList.join(", ")}.`);
+    if (bImmList.length) reasons.push(`${b.name} immune to: ${bImmList.join(", ")}.`);
+
+    const confidence = computeConfidence(ttkAB, ttkBA);
+
+    return {
+      a: snapshot(a, dpsAB, ttkAB),
+      b: snapshot(b, dpsBA, ttkBA),
+      winner,
+      winnerName,
+      loserName,
+      hpRemaining: Math.round(hpRemaining),
+      confidence,
+      reasons,
+    };
+  }
+
+  function listImmunities(monster) {
+    const imm = monster?.immunities;
+    if (!imm) return [];
+    if (Array.isArray(imm)) return imm.map(String);
+    if (typeof imm === "object") {
+      return Object.keys(imm).filter((k) => imm[k]);
+    }
+    return [];
+  }
+
+  function snapshot(monster, dps, ttk) {
+    return {
+      name: monster.name,
+      health: monster.health,
+      armor: monster.armor || 0,
+      speed: monster.speed || 0,
+      experience: monster.experience || 0,
+      attackCount: Array.isArray(monster.attacks) ? monster.attacks.length : 0,
+      immunities: listImmunities(monster),
+      dps: Number(dps.toFixed(1)),
+      ttkOpponentSec: Number.isFinite(ttk) ? Number(ttk.toFixed(1)) : null,
+    };
+  }
+
+  function computeConfidence(ttkA, ttkB) {
+    if (!Number.isFinite(ttkA) && !Number.isFinite(ttkB)) return "n/a";
+    if (!Number.isFinite(ttkA)) return "decisive";
+    if (!Number.isFinite(ttkB)) return "decisive";
+    const ratio = Math.min(ttkA, ttkB) / Math.max(ttkA, ttkB);
+    if (ratio < 0.5) return "decisive";
+    if (ratio < 0.8) return "likely";
+    if (ratio < 0.95) return "edge";
+    return "coin flip";
+  }
+
+  function status() {
+    return {
+      monsterCount: state.monsters?.length || 0,
+      fetchedAt: state.fetchedAt,
+      lastError: state.lastError,
+      cacheTtlMs: config.cacheTtlMs,
+    };
+  }
+
+  function clearCache() {
+    state.monsters = null;
+    state.monstersByKey = null;
+    state.fetchedAt = 0;
+    try { bot.storage.remove(cacheStorageKey); } catch (error) {}
+    return true;
+  }
+
+  loadCache();
+
+  bot.fightEstimator = {
+    fetchLibrary,
+    findMonster,
+    searchMonsters,
+    simulate,
+    status,
+    clearCache,
+    config,
+  };
+};
+window.__minibiaCopilotBundle = window.__minibiaCopilotBundle || {};
+
 window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
   const panelPositionKey = "minibiaCopilot.ui.panelPosition";
   const panelCollapsedKey = "minibiaCopilot.ui.panelCollapsed";
@@ -9911,6 +10226,165 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
       node.classList.add("mc-toast-leaving");
       window.setTimeout(() => node.remove(), 240);
     }, ttl);
+  }
+
+  function ensureFightModal() {
+    let modal = document.getElementById("minibia-copilot-fight-modal");
+    if (modal) return modal;
+    modal = document.createElement("div");
+    modal.id = "minibia-copilot-fight-modal";
+    modal.innerHTML = `
+      <div class="mc-fight-dialog" role="dialog" aria-modal="true">
+        <div class="mc-fight-head">
+          <h3 class="mc-fight-title">Monster Matchup</h3>
+          <button type="button" id="minibia-copilot-fight-close" aria-label="Close">✕</button>
+        </div>
+        <div class="mc-fight-pickers">
+          <input type="text" id="minibia-copilot-fight-a" list="minibia-copilot-fight-datalist" placeholder="Monster A (e.g. Ferumbras)" autocomplete="off" />
+          <div class="mc-fight-vs">VS</div>
+          <input type="text" id="minibia-copilot-fight-b" list="minibia-copilot-fight-datalist" placeholder="Monster B (e.g. Vesperoth)" autocomplete="off" />
+        </div>
+        <datalist id="minibia-copilot-fight-datalist"></datalist>
+        <div class="mc-fight-actions">
+          <button type="button" id="minibia-copilot-fight-go">⚔ Fight!</button>
+          <button type="button" id="minibia-copilot-fight-refresh-lib">Reload Library</button>
+        </div>
+        <div class="mc-fight-status" id="minibia-copilot-fight-status">Loading library…</div>
+        <div class="mc-fight-result" id="minibia-copilot-fight-result" hidden></div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+
+    modal.addEventListener("click", (event) => {
+      if (event.target === modal) closeFightModal();
+    });
+    modal.querySelector("#minibia-copilot-fight-close")?.addEventListener("click", closeFightModal);
+    modal.querySelector("#minibia-copilot-fight-go")?.addEventListener("click", runFightSimulation);
+    modal.querySelector("#minibia-copilot-fight-refresh-lib")?.addEventListener("click", () => {
+      bot.fightEstimator?.clearCache?.();
+      loadFightLibrary(true);
+    });
+    [modal.querySelector("#minibia-copilot-fight-a"), modal.querySelector("#minibia-copilot-fight-b")].forEach((input) => {
+      if (!input) return;
+      input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          runFightSimulation();
+        }
+      });
+    });
+
+    bot.addCleanup(() => modal?.remove());
+    return modal;
+  }
+
+  function openFightModal() {
+    const modal = ensureFightModal();
+    modal.dataset.open = "true";
+    loadFightLibrary(false);
+  }
+
+  function closeFightModal() {
+    const modal = document.getElementById("minibia-copilot-fight-modal");
+    if (modal) modal.dataset.open = "false";
+  }
+
+  function fillFightDatalist() {
+    const datalist = document.getElementById("minibia-copilot-fight-datalist");
+    if (!datalist) return;
+    const status = bot.fightEstimator?.status?.();
+    const count = status?.monsterCount || 0;
+    if (!count) {
+      datalist.innerHTML = "";
+      return;
+    }
+    const monsters = bot.fightEstimator?.searchMonsters?.("", 9999)
+      || (window.minibiaCopilot?.fightEstimator?.searchMonsters?.("", 9999));
+    if (monsters && monsters.length) {
+      datalist.innerHTML = monsters.map((m) => `<option value="${escapeHtml(m.name)}"></option>`).join("");
+      return;
+    }
+    const a = document.getElementById("minibia-copilot-fight-a");
+    if (a) a.placeholder = "Library not indexed; type a known name";
+  }
+
+  async function loadFightLibrary(force) {
+    const statusEl = document.getElementById("minibia-copilot-fight-status");
+    if (statusEl) statusEl.textContent = force ? "Reloading library…" : "Loading library…";
+    try {
+      await bot.fightEstimator?.fetchLibrary?.({ force });
+      const status = bot.fightEstimator?.status?.();
+      const count = status?.monsterCount || 0;
+      if (statusEl) statusEl.textContent = `Library: ${count} monsters loaded.`;
+      fillFightDatalist();
+    } catch (error) {
+      if (statusEl) statusEl.textContent = "Library load failed: " + (error?.message || String(error));
+    }
+  }
+
+  function runFightSimulation() {
+    const a = document.getElementById("minibia-copilot-fight-a")?.value?.trim();
+    const b = document.getElementById("minibia-copilot-fight-b")?.value?.trim();
+    const resultEl = document.getElementById("minibia-copilot-fight-result");
+    if (!resultEl) return;
+    if (!a || !b) {
+      resultEl.hidden = false;
+      resultEl.innerHTML = '<div class="mc-fight-verdict">Pick two monsters first.</div>';
+      return;
+    }
+
+    const outcome = bot.fightEstimator?.simulate?.(a, b);
+    if (!outcome) {
+      resultEl.hidden = false;
+      resultEl.innerHTML = '<div class="mc-fight-verdict">Estimator not available.</div>';
+      return;
+    }
+    if (outcome.error) {
+      resultEl.hidden = false;
+      resultEl.innerHTML = `<div class="mc-fight-verdict">⚠ ${escapeHtml(outcome.error)}</div>`;
+      return;
+    }
+
+    const verdict = outcome.winner === "a"
+      ? `🏆 ${escapeHtml(outcome.winnerName)} wins — confidence: ${escapeHtml(outcome.confidence)}`
+      : outcome.winner === "b"
+      ? `🏆 ${escapeHtml(outcome.winnerName)} wins — confidence: ${escapeHtml(outcome.confidence)}`
+      : "🤝 Draw";
+    const winnerKey = outcome.winner;
+
+    function renderCard(side, snap) {
+      const isWinner = winnerKey === side;
+      const isLoser = winnerKey !== "draw" && winnerKey !== side;
+      const ttkText = snap.ttkOpponentSec != null ? `${snap.ttkOpponentSec}s` : "n/a";
+      return `
+        <div class="mc-fight-card" ${isWinner ? 'data-winner="true"' : ""} ${isLoser ? 'data-loser="true"' : ""}>
+          <h4>${escapeHtml(snap.name)}</h4>
+          <dl>
+            <dt>HP</dt><dd>${escapeHtml(snap.health)}</dd>
+            <dt>Armor</dt><dd>${escapeHtml(snap.armor)}</dd>
+            <dt>Speed</dt><dd>${escapeHtml(snap.speed)}</dd>
+            <dt>Attacks</dt><dd>${escapeHtml(snap.attackCount)}</dd>
+            <dt>Est. DPS</dt><dd>${escapeHtml(snap.dps)}</dd>
+            <dt>Kills in</dt><dd>${escapeHtml(ttkText)}</dd>
+            <dt>Immune</dt><dd>${escapeHtml(snap.immunities.join(", ") || "—")}</dd>
+            <dt>Exp</dt><dd>${escapeHtml(snap.experience)}</dd>
+          </dl>
+        </div>
+      `;
+    }
+
+    const reasonsHtml = (outcome.reasons || []).map((r) => `<li>${escapeHtml(r)}</li>`).join("");
+
+    resultEl.hidden = false;
+    resultEl.innerHTML = `
+      <div class="mc-fight-verdict">${verdict}</div>
+      ${outcome.hpRemaining ? `<div class="mc-fight-status">Winner ends with ~${outcome.hpRemaining} HP remaining.</div>` : ""}
+      <div class="mc-fight-grid">
+        ${renderCard("a", outcome.a)}
+        ${renderCard("b", outcome.b)}
+      </div>
+      ${reasonsHtml ? `<ul class="mc-fight-reasons">${reasonsHtml}</ul>` : ""}
+    `;
   }
 
   function refreshAlphaWatchStatus() {
@@ -10637,6 +11111,169 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
         to { opacity: 0; transform: translateY(-8px); }
       }
 
+      #minibia-copilot-fight-modal {
+        position: fixed;
+        inset: 0;
+        z-index: 2147483640;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        background: rgba(0, 0, 0, 0.55);
+        font: 12px/1.4 Verdana, sans-serif;
+        color: #f1e2b8;
+      }
+
+      #minibia-copilot-fight-modal[data-open="true"] {
+        display: flex;
+      }
+
+      #minibia-copilot-fight-modal .mc-fight-dialog {
+        width: min(640px, calc(100vw - 32px));
+        max-height: calc(100vh - 64px);
+        overflow-y: auto;
+        padding: 16px;
+        border: 1px solid rgba(224, 200, 148, 0.45);
+        border-radius: 12px;
+        background: linear-gradient(180deg, rgba(30, 23, 15, 0.98), rgba(15, 11, 8, 0.99));
+        box-shadow: 0 16px 36px rgba(0, 0, 0, 0.55);
+      }
+
+      #minibia-copilot-fight-modal .mc-fight-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 12px;
+        padding-bottom: 8px;
+        border-bottom: 1px solid rgba(224, 200, 148, 0.25);
+      }
+
+      #minibia-copilot-fight-modal .mc-fight-title {
+        margin: 0;
+        font-size: 13px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #ffcf5a;
+      }
+
+      #minibia-copilot-fight-modal .mc-fight-pickers {
+        display: grid;
+        grid-template-columns: 1fr auto 1fr;
+        gap: 8px;
+        align-items: center;
+      }
+
+      #minibia-copilot-fight-modal .mc-fight-vs {
+        font-weight: 700;
+        font-size: 16px;
+        color: #ffcf5a;
+        text-align: center;
+      }
+
+      #minibia-copilot-fight-modal input {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 8px 10px;
+        border: 1px solid rgba(224, 200, 148, 0.4);
+        border-radius: 8px;
+        background: rgba(16, 12, 8, 0.92);
+        color: #f7eccf;
+        font: inherit;
+      }
+
+      #minibia-copilot-fight-modal button {
+        padding: 8px 14px;
+        border: 1px solid rgba(224, 200, 148, 0.4);
+        border-radius: 8px;
+        background: linear-gradient(180deg, #635133, #3f321f);
+        color: #f7eccf;
+        cursor: pointer;
+        font: inherit;
+        font-weight: 700;
+      }
+
+      #minibia-copilot-fight-modal .mc-fight-actions {
+        display: flex;
+        gap: 8px;
+        margin-top: 12px;
+      }
+
+      #minibia-copilot-fight-modal .mc-fight-result {
+        margin-top: 14px;
+        padding: 12px;
+        border: 1px solid rgba(224, 200, 148, 0.22);
+        border-radius: 8px;
+        background: rgba(0, 0, 0, 0.3);
+      }
+
+      #minibia-copilot-fight-modal .mc-fight-verdict {
+        font-size: 14px;
+        font-weight: 700;
+        color: #ffcf5a;
+        margin-bottom: 8px;
+      }
+
+      #minibia-copilot-fight-modal .mc-fight-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+        margin-top: 8px;
+      }
+
+      #minibia-copilot-fight-modal .mc-fight-card {
+        padding: 8px 10px;
+        border: 1px solid rgba(224, 200, 148, 0.18);
+        border-radius: 8px;
+        background: rgba(40, 28, 14, 0.4);
+      }
+
+      #minibia-copilot-fight-modal .mc-fight-card[data-winner="true"] {
+        border-color: rgba(120, 220, 130, 0.6);
+        background: linear-gradient(180deg, rgba(30, 80, 32, 0.4), rgba(20, 14, 8, 0.6));
+      }
+
+      #minibia-copilot-fight-modal .mc-fight-card[data-loser="true"] {
+        border-color: rgba(255, 100, 100, 0.4);
+        background: linear-gradient(180deg, rgba(80, 20, 20, 0.4), rgba(20, 14, 8, 0.6));
+      }
+
+      #minibia-copilot-fight-modal .mc-fight-card h4 {
+        margin: 0 0 6px;
+        color: #f7eccf;
+      }
+
+      #minibia-copilot-fight-modal .mc-fight-card dl {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 2px 8px;
+        margin: 0;
+        font-size: 11px;
+      }
+
+      #minibia-copilot-fight-modal .mc-fight-card dt {
+        color: #8c7a52;
+      }
+
+      #minibia-copilot-fight-modal .mc-fight-card dd {
+        margin: 0;
+        color: #f1e2b8;
+      }
+
+      #minibia-copilot-fight-modal ul.mc-fight-reasons {
+        margin: 10px 0 0;
+        padding-left: 18px;
+        color: #d3c49d;
+        font-size: 11px;
+        line-height: 1.4;
+      }
+
+      #minibia-copilot-fight-modal .mc-fight-status {
+        margin-top: 8px;
+        color: #8c7a52;
+        font-size: 11px;
+      }
+
       #minibia-copilot-panel .mc-actions {
         display: grid;
         gap: 6px;
@@ -10898,6 +11535,14 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
             <div class="mc-stat"><span class="mc-stat-label">Mana</span><span class="mc-stat-value" data-tone="mana" id="minibia-copilot-snapshot-mana">—</span></div>
             <div class="mc-stat"><span class="mc-stat-label">Lvl</span><span class="mc-stat-value" data-tone="lvl" id="minibia-copilot-snapshot-level">—</span></div>
           </div>
+          <div class="mc-section">
+            <div class="mc-label">Fight Estimator</div>
+            <div class="mc-stack">
+              <button type="button" class="mc-small-button" id="minibia-copilot-fight-open">⚔ Open Monster Matchup</button>
+              <div class="mc-small-note">Pulls /api/library and predicts who wins between two monsters.</div>
+            </div>
+          </div>
+
           <div class="mc-section">
             <div class="mc-label">Alpha Watch</div>
             <div class="mc-stack">
@@ -11351,6 +11996,10 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
     const equipAmuletCustomInput = panel.querySelector("#minibia-copilot-equip-amulet-custom");
     const equipAmuletAutoSwapInput = panel.querySelector("#minibia-copilot-equip-amulet-autoswap");
     const alphaWatchEnabledInput = panel.querySelector("#minibia-copilot-alpha-watch-enabled");
+    const fightOpenButton = panel.querySelector("#minibia-copilot-fight-open");
+    if (fightOpenButton) {
+      fightOpenButton.addEventListener("click", () => openFightModal());
+    }
     const trackerEnabledInput = panel.querySelector("#minibia-copilot-tracker-enabled");
     const trackerIntervalInput = panel.querySelector("#minibia-copilot-tracker-interval");
     const trackerAddInput = panel.querySelector("#minibia-copilot-tracker-add-input");
@@ -12427,6 +13076,7 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
     currentBundle.installHuntModule(bot);
     currentBundle.installTrackerModule(bot);
     currentBundle.installAlphaWatchModule(bot);
+    currentBundle.installFightEstimatorModule(bot);
     currentBundle.installPanel(bot);
 
     bot.ui.inject();
@@ -12455,6 +13105,7 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
       hunt: bot.hunt.status(),
       tracker: bot.tracker.status(),
       alphaWatch: bot.alphaWatch.status(),
+      fightEstimator: bot.fightEstimator.status(),
     });
 
     window.minibiaCopilot = bot;

@@ -20,6 +20,7 @@ cat \
   src/modules/hunt.js \
   src/modules/tracker.js \
   src/modules/alpha-watch.js \
+  src/modules/fight-estimator.js \
   src/ui/panel.js \
   src/main.js \
   > minibia-copilot.js

@@ -112,6 +112,7 @@
     currentBundle.installHuntModule(bot);
     currentBundle.installTrackerModule(bot);
     currentBundle.installAlphaWatchModule(bot);
+    currentBundle.installFightEstimatorModule(bot);
     currentBundle.installPanel(bot);
 
     bot.ui.inject();
@@ -140,6 +141,7 @@
       hunt: bot.hunt.status(),
       tracker: bot.tracker.status(),
       alphaWatch: bot.alphaWatch.status(),
+      fightEstimator: bot.fightEstimator.status(),
     });
 
     window.minibiaCopilot = bot;
