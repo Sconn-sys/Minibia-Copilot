@@ -11443,7 +11443,7 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
         line-height: 1;
       }
 
-      #minibia-copilot-panel #minibia-copilot-cave-pause-toggle[data-paused="true"] {
+      #minibia-copilot-panel #minibia-copilot-pause-toggle[data-paused="true"] {
         color: #ffcf5a;
         border-color: rgba(255, 207, 90, 0.6);
         background: linear-gradient(180deg, rgba(120, 80, 20, 0.7), rgba(60, 40, 10, 0.7));
@@ -12297,7 +12297,7 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
       <div class="mc-titlebar">
         <div class="mc-title">Minibia <span class="mc-title-accent">Copilot</span></div>
         <div class="mc-titlebar-actions">
-          <button type="button" class="mc-icon-button" id="minibia-copilot-cave-pause-toggle" aria-label="Pause cavebot" title="Pause cavebot">⏸</button>
+          <button type="button" class="mc-icon-button" id="minibia-copilot-pause-toggle" aria-label="Pause all bot actions" title="Pause all bot actions">⏸</button>
           <button type="button" class="mc-icon-button" id="minibia-copilot-reload" aria-label="Reload bot" title="Reload bot">⟳</button>
           <button type="button" class="mc-icon-button" id="minibia-copilot-collapse" aria-label="Minimize panel" title="Minimize">−</button>
         </div>
@@ -12917,7 +12917,7 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
     const xrayFloorSelect = panel.querySelector("#minibia-copilot-xray-floor-select");
     const collapseButton = panel.querySelector("#minibia-copilot-collapse");
     const reloadButton = panel.querySelector("#minibia-copilot-reload");
-    const cavePauseToggle = panel.querySelector("#minibia-copilot-cave-pause-toggle");
+    const cavePauseToggle = panel.querySelector("#minibia-copilot-pause-toggle");
     const caveRecordButton = panel.querySelector("#minibia-copilot-cave-record");
     const caveRemoveLastButton = panel.querySelector("#minibia-copilot-cave-remove-last");
     const caveStartButton = panel.querySelector("#minibia-copilot-cave-start");
@@ -12954,23 +12954,29 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
       });
     }
 
-    function refreshCavePauseToggle() {
+    function refreshPauseToggle() {
       if (!cavePauseToggle) return;
-      const paused = !!bot.cave?.isPaused?.();
+      const paused = typeof bot.isAllPaused === "function"
+        ? bot.isAllPaused()
+        : !!bot.cave?.isPaused?.();
       cavePauseToggle.textContent = paused ? "▶" : "⏸";
       cavePauseToggle.dataset.paused = paused ? "true" : "false";
-      cavePauseToggle.setAttribute("title", paused ? "Resume cavebot" : "Pause cavebot");
-      cavePauseToggle.setAttribute("aria-label", paused ? "Resume cavebot" : "Pause cavebot");
+      cavePauseToggle.setAttribute("title", paused ? "Resume all bot actions" : "Pause all bot actions");
+      cavePauseToggle.setAttribute("aria-label", paused ? "Resume all bot actions" : "Pause all bot actions");
     }
 
     if (cavePauseToggle) {
       cavePauseToggle.addEventListener("click", () => {
-        bot.cave?.togglePause?.();
-        refreshCavePauseToggle();
+        if (typeof bot.toggleAllPaused === "function") {
+          bot.toggleAllPaused();
+        } else if (bot.cave?.togglePause) {
+          bot.cave.togglePause();
+        }
+        refreshPauseToggle();
         refreshCaveStatus();
       });
-      refreshCavePauseToggle();
-      const pauseTimerId = window.setInterval(refreshCavePauseToggle, 1000);
+      refreshPauseToggle();
+      const pauseTimerId = window.setInterval(refreshPauseToggle, 1000);
       bot.addCleanup(() => window.clearInterval(pauseTimerId));
     }
 
@@ -14029,6 +14035,67 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
     bot.start = (...args) => bot.rune.start(...args);
     bot.stop = (...args) => bot.rune.stop(...args);
     bot.reload = () => window.minibiaCopilotReload?.();
+
+    bot.__pauseSnapshot = null;
+    const PAUSEABLE_MODULES = [
+      "rune", "heal", "attack", "eat", "invisible", "magicShield",
+      "equipRing", "equipAmulet", "talk", "lootbag",
+    ];
+
+    bot.pauseAll = function pauseAll() {
+      if (bot.__pauseSnapshot) return false;
+      const snapshot = {};
+      PAUSEABLE_MODULES.forEach((name) => {
+        const mod = bot[name];
+        if (!mod || typeof mod.stop !== "function") return;
+        const wasRunning = !!mod.status?.().running;
+        snapshot[name] = wasRunning;
+        if (wasRunning) {
+          try { mod.stop({ persistEnabled: false }); } catch (error) {}
+        }
+      });
+      if (bot.cave?.pause && bot.cave?.isPaused) {
+        snapshot.cave = !bot.cave.isPaused();
+        if (snapshot.cave) {
+          try { bot.cave.pause(); } catch (error) {}
+        }
+      }
+      bot.__pauseSnapshot = snapshot;
+      bot.log("everything paused", snapshot);
+      return true;
+    };
+
+    bot.resumeAll = function resumeAll() {
+      if (!bot.__pauseSnapshot) return false;
+      const snapshot = bot.__pauseSnapshot;
+      PAUSEABLE_MODULES.forEach((name) => {
+        if (!snapshot[name]) return;
+        const mod = bot[name];
+        if (mod && typeof mod.start === "function") {
+          try { mod.start(); } catch (error) {}
+        }
+      });
+      if (snapshot.cave && bot.cave?.resume) {
+        try { bot.cave.resume(); } catch (error) {}
+      }
+      bot.__pauseSnapshot = null;
+      bot.log("everything resumed");
+      return true;
+    };
+
+    bot.toggleAllPaused = function toggleAllPaused() {
+      if (bot.__pauseSnapshot) {
+        bot.resumeAll();
+        return false;
+      }
+      bot.pauseAll();
+      return true;
+    };
+
+    bot.isAllPaused = function isAllPaused() {
+      return !!bot.__pauseSnapshot;
+    };
+
     bot.status = () => ({
       version: bot.version,
       pz: {

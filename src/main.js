@@ -122,6 +122,67 @@
     bot.start = (...args) => bot.rune.start(...args);
     bot.stop = (...args) => bot.rune.stop(...args);
     bot.reload = () => window.minibiaCopilotReload?.();
+
+    bot.__pauseSnapshot = null;
+    const PAUSEABLE_MODULES = [
+      "rune", "heal", "attack", "eat", "invisible", "magicShield",
+      "equipRing", "equipAmulet", "talk", "lootbag",
+    ];
+
+    bot.pauseAll = function pauseAll() {
+      if (bot.__pauseSnapshot) return false;
+      const snapshot = {};
+      PAUSEABLE_MODULES.forEach((name) => {
+        const mod = bot[name];
+        if (!mod || typeof mod.stop !== "function") return;
+        const wasRunning = !!mod.status?.().running;
+        snapshot[name] = wasRunning;
+        if (wasRunning) {
+          try { mod.stop({ persistEnabled: false }); } catch (error) {}
+        }
+      });
+      if (bot.cave?.pause && bot.cave?.isPaused) {
+        snapshot.cave = !bot.cave.isPaused();
+        if (snapshot.cave) {
+          try { bot.cave.pause(); } catch (error) {}
+        }
+      }
+      bot.__pauseSnapshot = snapshot;
+      bot.log("everything paused", snapshot);
+      return true;
+    };
+
+    bot.resumeAll = function resumeAll() {
+      if (!bot.__pauseSnapshot) return false;
+      const snapshot = bot.__pauseSnapshot;
+      PAUSEABLE_MODULES.forEach((name) => {
+        if (!snapshot[name]) return;
+        const mod = bot[name];
+        if (mod && typeof mod.start === "function") {
+          try { mod.start(); } catch (error) {}
+        }
+      });
+      if (snapshot.cave && bot.cave?.resume) {
+        try { bot.cave.resume(); } catch (error) {}
+      }
+      bot.__pauseSnapshot = null;
+      bot.log("everything resumed");
+      return true;
+    };
+
+    bot.toggleAllPaused = function toggleAllPaused() {
+      if (bot.__pauseSnapshot) {
+        bot.resumeAll();
+        return false;
+      }
+      bot.pauseAll();
+      return true;
+    };
+
+    bot.isAllPaused = function isAllPaused() {
+      return !!bot.__pauseSnapshot;
+    };
+
     bot.status = () => ({
       version: bot.version,
       pz: {
