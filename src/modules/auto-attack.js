@@ -43,6 +43,8 @@ window.__minibiaCopilotBundle.installAutoAttackModule = function installAutoAtta
       kitingEnabled: true,
       targetPriority: [],
       preemptPriority: true,
+      attackRange: 5,
+      chaseInNonMelee: true,
     },
     storedConfig
   );
@@ -592,6 +594,48 @@ window.__minibiaCopilotBundle.installAutoAttackModule = function installAutoAtta
     }
   }
 
+  function syncRangedChase(now = Date.now()) {
+    if (config.meleeMode || !config.chaseInNonMelee) return false;
+    const target = getEngagedTarget();
+    if (!target) return false;
+
+    const playerPosition = normalizePosition(bot.getPlayerPosition());
+    const targetPosition = normalizePosition(target.getPosition?.() || target.__position);
+    if (!playerPosition || !targetPosition || playerPosition.z !== targetPosition.z) return false;
+
+    const attackRange = Math.max(1, Math.min(8, Number(config.attackRange) || 5));
+    const safeDistance = Math.max(1, Math.min(7, Number(config.safeDistance) || 4));
+    const currentDistance = getTileDistance(playerPosition, targetPosition);
+
+    // In the sweet spot (between kite distance and attack range) — do nothing.
+    if (currentDistance <= attackRange && currentDistance >= safeDistance) return false;
+    if (currentDistance < safeDistance) return false; // kite handles this
+    if (now - state.lastChaseAt < 600) return true;
+
+    if (setCurrentFollowTarget(target)) {
+      state.lastChaseAt = now;
+      bot.log("ranged-chasing target", {
+        id: target.id,
+        name: target.name || "Mob",
+        distance: currentDistance,
+        attackRange,
+      });
+      return true;
+    }
+
+    try {
+      window.gameClient?.world?.pathfinder?.findPath?.(
+        new Position(playerPosition.x, playerPosition.y, playerPosition.z),
+        new Position(targetPosition.x, targetPosition.y, targetPosition.z)
+      );
+      state.lastChaseAt = now;
+      return true;
+    } catch (error) {
+      bot.log("ranged-chase path failed", { error: error?.message || error });
+      return false;
+    }
+  }
+
   function syncMeleeChase(now = Date.now()) {
     if (!config.meleeMode) {
       return false;
@@ -810,6 +854,8 @@ window.__minibiaCopilotBundle.installAutoAttackModule = function installAutoAtta
     } else {
       if (syncKite(now)) {
         if (getCurrentTarget()) return triggerRune(now);
+      } else if (syncRangedChase(now)) {
+        if (getCurrentTarget()) return triggerRune(now);
       }
     }
 
@@ -928,6 +974,10 @@ window.__minibiaCopilotBundle.installAutoAttackModule = function installAutoAtta
 
     if (Object.prototype.hasOwnProperty.call(nextConfig, "safeDistance")) {
       nextConfig.safeDistance = Math.max(1, Math.min(7, Math.trunc(Number(nextConfig.safeDistance) || config.safeDistance || 4)));
+    }
+
+    if (Object.prototype.hasOwnProperty.call(nextConfig, "attackRange")) {
+      nextConfig.attackRange = Math.max(1, Math.min(8, Math.trunc(Number(nextConfig.attackRange) || config.attackRange || 5)));
     }
 
     if (Object.prototype.hasOwnProperty.call(nextConfig, "targetPriority")) {

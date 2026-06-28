@@ -2780,6 +2780,8 @@ window.__minibiaCopilotBundle.installAutoAttackModule = function installAutoAtta
       kitingEnabled: true,
       targetPriority: [],
       preemptPriority: true,
+      attackRange: 5,
+      chaseInNonMelee: true,
     },
     storedConfig
   );
@@ -3329,6 +3331,48 @@ window.__minibiaCopilotBundle.installAutoAttackModule = function installAutoAtta
     }
   }
 
+  function syncRangedChase(now = Date.now()) {
+    if (config.meleeMode || !config.chaseInNonMelee) return false;
+    const target = getEngagedTarget();
+    if (!target) return false;
+
+    const playerPosition = normalizePosition(bot.getPlayerPosition());
+    const targetPosition = normalizePosition(target.getPosition?.() || target.__position);
+    if (!playerPosition || !targetPosition || playerPosition.z !== targetPosition.z) return false;
+
+    const attackRange = Math.max(1, Math.min(8, Number(config.attackRange) || 5));
+    const safeDistance = Math.max(1, Math.min(7, Number(config.safeDistance) || 4));
+    const currentDistance = getTileDistance(playerPosition, targetPosition);
+
+    // In the sweet spot (between kite distance and attack range) — do nothing.
+    if (currentDistance <= attackRange && currentDistance >= safeDistance) return false;
+    if (currentDistance < safeDistance) return false; // kite handles this
+    if (now - state.lastChaseAt < 600) return true;
+
+    if (setCurrentFollowTarget(target)) {
+      state.lastChaseAt = now;
+      bot.log("ranged-chasing target", {
+        id: target.id,
+        name: target.name || "Mob",
+        distance: currentDistance,
+        attackRange,
+      });
+      return true;
+    }
+
+    try {
+      window.gameClient?.world?.pathfinder?.findPath?.(
+        new Position(playerPosition.x, playerPosition.y, playerPosition.z),
+        new Position(targetPosition.x, targetPosition.y, targetPosition.z)
+      );
+      state.lastChaseAt = now;
+      return true;
+    } catch (error) {
+      bot.log("ranged-chase path failed", { error: error?.message || error });
+      return false;
+    }
+  }
+
   function syncMeleeChase(now = Date.now()) {
     if (!config.meleeMode) {
       return false;
@@ -3547,6 +3591,8 @@ window.__minibiaCopilotBundle.installAutoAttackModule = function installAutoAtta
     } else {
       if (syncKite(now)) {
         if (getCurrentTarget()) return triggerRune(now);
+      } else if (syncRangedChase(now)) {
+        if (getCurrentTarget()) return triggerRune(now);
       }
     }
 
@@ -3665,6 +3711,10 @@ window.__minibiaCopilotBundle.installAutoAttackModule = function installAutoAtta
 
     if (Object.prototype.hasOwnProperty.call(nextConfig, "safeDistance")) {
       nextConfig.safeDistance = Math.max(1, Math.min(7, Math.trunc(Number(nextConfig.safeDistance) || config.safeDistance || 4)));
+    }
+
+    if (Object.prototype.hasOwnProperty.call(nextConfig, "attackRange")) {
+      nextConfig.attackRange = Math.max(1, Math.min(8, Math.trunc(Number(nextConfig.attackRange) || config.attackRange || 5)));
     }
 
     if (Object.prototype.hasOwnProperty.call(nextConfig, "targetPriority")) {
@@ -12434,12 +12484,20 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
                   <span class="mc-field-label">Kite distance (sqm)</span>
                   <input type="number" id="minibia-copilot-auto-attack-safe-distance" min="1" max="7" placeholder="4" />
                 </label>
+                <label class="mc-field" for="minibia-copilot-auto-attack-range">
+                  <span class="mc-field-label">Attack range (sqm)</span>
+                  <input type="number" id="minibia-copilot-auto-attack-range" min="1" max="8" placeholder="5" />
+                </label>
                 <label class="mc-toggle" style="align-self:end;">
                   <input type="checkbox" id="minibia-copilot-auto-attack-kite" />
                   <span>Kite (non-melee)</span>
                 </label>
+                <label class="mc-toggle" style="align-self:end;">
+                  <input type="checkbox" id="minibia-copilot-auto-attack-chase" />
+                  <span>Chase (non-melee)</span>
+                </label>
               </div>
-              <div class="mc-small-note">Strategy "Manual" uses your hotkey. The other modes call the in-game action directly so no hotkey binding is needed. Kiting only runs when not in Melee mode.</div>
+              <div class="mc-small-note">Strategy "Manual" uses your hotkey. The other modes call the in-game action directly so no hotkey binding is needed. Non-melee: bot walks toward target when farther than Attack range, backs away when closer than Kite distance; in-between it holds position.</div>
             </div>
           </div>
 
@@ -12903,6 +12961,8 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
     const autoAttackStrategyInput = panel.querySelector("#minibia-copilot-auto-attack-strategy");
     const autoAttackSafeDistanceInput = panel.querySelector("#minibia-copilot-auto-attack-safe-distance");
     const autoAttackKiteInput = panel.querySelector("#minibia-copilot-auto-attack-kite");
+    const autoAttackRangeInput = panel.querySelector("#minibia-copilot-auto-attack-range");
+    const autoAttackChaseInput = panel.querySelector("#minibia-copilot-auto-attack-chase");
     const talkEnabledInput = panel.querySelector("#minibia-copilot-talk-enabled");
     const talkApiKeyInput = panel.querySelector("#minibia-copilot-talk-api-key");
     const talkPromptInput = panel.querySelector("#minibia-copilot-talk-prompt");
@@ -13682,6 +13742,22 @@ window.__minibiaCopilotBundle.installPanel = function installPanel(bot) {
       autoAttackKiteInput.checked = bot.attack?.config?.kitingEnabled !== false;
       autoAttackKiteInput.addEventListener("change", () => {
         bot.attack.updateConfig({ kitingEnabled: autoAttackKiteInput.checked });
+      });
+    }
+
+    if (autoAttackRangeInput) {
+      autoAttackRangeInput.value = String(bot.attack?.config?.attackRange ?? 5);
+      autoAttackRangeInput.addEventListener("change", () => {
+        const attackRange = Math.max(1, Math.min(8, Number(autoAttackRangeInput.value) || 5));
+        autoAttackRangeInput.value = String(attackRange);
+        bot.attack.updateConfig({ attackRange });
+      });
+    }
+
+    if (autoAttackChaseInput) {
+      autoAttackChaseInput.checked = bot.attack?.config?.chaseInNonMelee !== false;
+      autoAttackChaseInput.addEventListener("change", () => {
+        bot.attack.updateConfig({ chaseInNonMelee: autoAttackChaseInput.checked });
       });
     }
 
