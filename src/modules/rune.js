@@ -6,20 +6,27 @@ window.__minibiaCopilotBundle.installRuneModule = function installRuneModule(bot
     running: false,
     timerId: null,
     lastRuneAt: 0,
+    lastGateReason: null,
+    lastGateLoggedAt: 0,
+    sentSinceStart: 0,
   };
   let resumeListenersAttached = false;
 
+  const storedRuneConfig = bot.storage.get(configStorageKey, {}) || {};
+  if (storedRuneConfig.minHpPercent === 50) delete storedRuneConfig.minHpPercent;
+  if (storedRuneConfig.runeManaCost === 600) delete storedRuneConfig.runeManaCost;
+  if (storedRuneConfig.minFoodSeconds === 30) delete storedRuneConfig.minFoodSeconds;
   const config = Object.assign(
     {
       tickMs: 250,
-      minHpPercent: 50,
-      minFoodSeconds: 30,
+      minHpPercent: 30,
+      minFoodSeconds: 5,
       runeSpellWords: "adori vita vis",
-      runeManaCost: 600,
+      runeManaCost: 100,
       runeCooldownMs: 3500,
       enabled: false,
     },
-    bot.storage.get(configStorageKey, {})
+    storedRuneConfig
   );
   config.tickMs = 250;
 
@@ -93,14 +100,58 @@ window.__minibiaCopilotBundle.installRuneModule = function installRuneModule(bot
     return getGateStatus(now).canMakeRune;
   }
 
+  function describeGateFailure(gate) {
+    if (!gate.hasStats) return "no player stats yet (player still loading?)";
+    const reasons = [];
+    if (!gate.enoughHp) {
+      const stats = readStats();
+      const hp = stats.hp;
+      const pct = hp?.max > 0 ? Math.round((hp.current / hp.max) * 100) : 0;
+      reasons.push(`HP ${pct}% < ${config.minHpPercent}%`);
+    }
+    if (!gate.enoughMana) {
+      const stats = readStats();
+      const mana = stats.mana;
+      reasons.push(`mana ${mana?.current ?? 0} < ${config.runeManaCost}`);
+    }
+    if (!gate.enoughFood) {
+      const stats = readStats();
+      reasons.push(`food ${stats.food?.text || "?"} < ${config.minFoodSeconds}s`);
+    }
+    if (!gate.cooldownReady) {
+      reasons.push(`cooldown ${Math.round(gate.cooldownRemainingMs)}ms`);
+    }
+    return reasons.length ? reasons.join("; ") : "unknown";
+  }
+
   function tryMakeRune() {
-    if (!canMakeRune()) {
+    const now = Date.now();
+    const gate = getGateStatus(now);
+    if (!gate.canMakeRune) {
+      if (!gate.cooldownReady && gate.enoughHp && gate.enoughMana && gate.enoughFood && gate.hasStats) {
+        return false;
+      }
+      const reason = describeGateFailure(gate);
+      if (reason !== state.lastGateReason || now - state.lastGateLoggedAt > 15000) {
+        state.lastGateReason = reason;
+        state.lastGateLoggedAt = now;
+        bot.log("rune maker waiting:", reason);
+      }
       return false;
+    }
+
+    if (state.lastGateReason) {
+      bot.log("rune maker gate cleared, casting", { spell: config.runeSpellWords });
+      state.lastGateReason = null;
     }
 
     const sent = bot.sendChat(config.runeSpellWords);
     if (sent) {
-      state.lastRuneAt = Date.now();
+      state.lastRuneAt = now;
+      state.sentSinceStart += 1;
+      bot.log("rune cast sent", { spell: config.runeSpellWords, sentSinceStart: state.sentSinceStart });
+    } else {
+      bot.log("rune sendChat failed (channelManager not ready?)");
     }
 
     return sent;
@@ -178,6 +229,9 @@ window.__minibiaCopilotBundle.installRuneModule = function installRuneModule(bot
     }
 
     state.running = true;
+    state.sentSinceStart = 0;
+    state.lastGateReason = null;
+    state.lastGateLoggedAt = 0;
     attachResumeListeners();
     bot.log("rune maker started", { ...config });
     tick();
@@ -206,11 +260,13 @@ window.__minibiaCopilotBundle.installRuneModule = function installRuneModule(bot
   function status() {
     return {
       running: state.running,
-        config: { ...config },
-        stats: readStats(),
-        gates: getGateStatus(),
-        lastRuneAt: state.lastRuneAt,
-      };
+      config: { ...config },
+      stats: readStats(),
+      gates: getGateStatus(),
+      lastRuneAt: state.lastRuneAt,
+      sentSinceStart: state.sentSinceStart,
+      lastGateReason: state.lastGateReason,
+    };
   }
 
   function updateConfig(nextConfig = {}) {
