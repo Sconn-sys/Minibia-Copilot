@@ -60,19 +60,21 @@ window.__minibiaCopilotBundle.installCaveModule = function installCaveModule(bot
   const storedCaveConfig = bot.storage.get(configStorageKey, {}) || {};
   if (storedCaveConfig.idleSnapMs === 10000) delete storedCaveConfig.idleSnapMs;
   if (storedCaveConfig.idleSnapMs === 3000) delete storedCaveConfig.idleSnapMs;
-  if (storedCaveConfig.tickMs === 500) delete storedCaveConfig.tickMs;
-  if (storedCaveConfig.tickMs === 250) delete storedCaveConfig.tickMs;
-  if (storedCaveConfig.repathMs === 1500) delete storedCaveConfig.repathMs;
-  if (storedCaveConfig.repathMs === 600) delete storedCaveConfig.repathMs;
+  if (storedCaveConfig.tickMs === 500 || storedCaveConfig.tickMs === 250 || storedCaveConfig.tickMs === 150) {
+    delete storedCaveConfig.tickMs;
+  }
+  if (storedCaveConfig.repathMs === 1500 || storedCaveConfig.repathMs === 600 || storedCaveConfig.repathMs === 400) {
+    delete storedCaveConfig.repathMs;
+  }
   if (storedCaveConfig.monsterPauseRange === 9) delete storedCaveConfig.monsterPauseRange;
   const config = Object.assign(
     {
-      tickMs: 150,
-      repathMs: 400,
+      tickMs: 500,
+      repathMs: 2000,
       waypointTolerance: 0,
-      idleSnapMs: 2000,
-      monsterPauseRange: 10,
-      combatStallMs: 5000,
+      idleSnapMs: 5000,
+      monsterPauseRange: 7,
+      combatStallMs: 10000,
       enabled: false,
       activePresetName: defaultPresetName,
     },
@@ -1753,18 +1755,28 @@ window.__minibiaCopilotBundle.installCaveModule = function installCaveModule(bot
   function handleServerCancel(message) {
     if (!state.running) return;
     const lower = String(message || "").toLowerCase();
-    if (lower.includes("there is no way") || lower.includes("no way")) {
-      // Pathfinder told us the current waypoint is unreachable. Force-advance
-      // so the route keeps going.
-      if (route.length > 1) {
-        bot.log("cave reacted to 'no way' — advancing past unreachable waypoint", {
-          fromIndex: state.currentIndex + 1,
-        });
-        advanceWaypoint();
-        state.lastPathAt = 0;
-        state.lastProgressAt = Date.now();
-      }
+    if (!(lower.includes("there is no way") || lower.includes("no way"))) return;
+
+    const now = Date.now();
+    const waypointKey = "wp-" + state.currentIndex;
+    // Require the SAME waypoint to fail twice within 5s before reacting —
+    // single "no way" can fire during normal walking when a tile briefly
+    // changes state.
+    if (state.lastNoWayWaypoint !== waypointKey || now - state.lastNoWayAt > 5000) {
+      state.lastNoWayWaypoint = waypointKey;
+      state.lastNoWayAt = now;
+      return;
     }
+    if (route.length > 1) {
+      bot.log("cave: 'no way' confirmed on waypoint — advancing", {
+        fromIndex: state.currentIndex + 1,
+      });
+      advanceWaypoint();
+      state.lastPathAt = 0;
+      state.lastProgressAt = now;
+    }
+    state.lastNoWayWaypoint = null;
+    state.lastNoWayAt = 0;
   }
 
   function start(overrides = {}) {

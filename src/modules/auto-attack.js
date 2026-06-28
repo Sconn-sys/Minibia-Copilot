@@ -20,6 +20,9 @@ window.__minibiaCopilotBundle.installAutoAttackModule = function installAutoAtta
     lastChasePlayerPosKey: null,
     lastChaseProgressAt: 0,
     lastChaseStalledTargetId: null,
+    lastChaseDestinationKey: null,
+    lastCancelKey: null,
+    lastCancelAt: 0,
     skippedTargetIds: new Map(),
   };
 
@@ -34,15 +37,21 @@ window.__minibiaCopilotBundle.installAutoAttackModule = function installAutoAtta
   delete storedConfig.preemptPriority;
   delete storedConfig.attackRange;
   delete storedConfig.chaseInNonMelee;
-  if (storedConfig.tickMs === 150) delete storedConfig.tickMs;
-  if (storedConfig.targetCooldownMs === 300) delete storedConfig.targetCooldownMs;
-  if (storedConfig.runeCooldownMs === 300) delete storedConfig.runeCooldownMs;
+  if (storedConfig.tickMs === 150 || storedConfig.tickMs === 100 || storedConfig.tickMs === 250) {
+    delete storedConfig.tickMs;
+  }
+  if (storedConfig.targetCooldownMs === 300 || storedConfig.targetCooldownMs === 200 || storedConfig.targetCooldownMs === 500) {
+    delete storedConfig.targetCooldownMs;
+  }
+  if (storedConfig.runeCooldownMs === 300 || storedConfig.runeCooldownMs === 250 || storedConfig.runeCooldownMs === 500) {
+    delete storedConfig.runeCooldownMs;
+  }
   const config = Object.assign(
     {
-      tickMs: 100,
+      tickMs: 500,
       runeHotbarSlot: null,
-      targetCooldownMs: 200,
-      runeCooldownMs: 250,
+      targetCooldownMs: 1500,
+      runeCooldownMs: 2000,
       maxTargetDistance: 7,
       meleeMode: true,
       enabled: false,
@@ -615,7 +624,7 @@ window.__minibiaCopilotBundle.installAutoAttackModule = function installAutoAtta
     const targetPosition = normalizePosition(target.getPosition?.() || target.__position);
     if (!playerPosition || !targetPosition || playerPosition.z !== targetPosition.z) return false;
 
-    // Kite (if enabled) handles too-close case via its own pathfind packet.
+    // Kite handles too-close case when enabled.
     if (config.kitingEnabled) {
       const safeDistance = Math.max(1, Math.min(7, Number(config.safeDistance) || 4));
       const currentDistance = getTileDistance(playerPosition, targetPosition);
@@ -624,8 +633,26 @@ window.__minibiaCopilotBundle.installAutoAttackModule = function installAutoAtta
 
     if (checkChaseStall(target, now)) return false;
 
-    setCurrentFollowTarget(target);
-    state.lastChaseAt = now;
+    // Same conservative pathfind chase as melee — one click toward an
+    // adjacent tile, no follow spam, no diagonal micromanagement.
+    const chaseThrottle = Math.max(800, Number(config.chaseThrottleMs) || 1200);
+    if (now - state.lastChaseAt < chaseThrottle) return true;
+
+    const adjacentPosition = findReachableAdjacentPosition(targetPosition, playerPosition);
+    if (!adjacentPosition) return false;
+
+    try {
+      const pathfinder = window.gameClient?.world?.pathfinder;
+      if (pathfinder?.findPath) {
+        pathfinder.findPath(
+          new Position(playerPosition.x, playerPosition.y, playerPosition.z),
+          new Position(adjacentPosition.x, adjacentPosition.y, adjacentPosition.z)
+        );
+        state.lastChaseAt = now;
+      }
+    } catch (error) {
+      bot.log("ranged chase pathfind failed", { error: error?.message || error });
+    }
     return true;
   }
 
@@ -651,42 +678,6 @@ window.__minibiaCopilotBundle.installAutoAttackModule = function installAutoAtta
     return true;
   }
 
-  function isOrthogonalAdjacent(from, to) {
-    if (!from || !to || from.z !== to.z) return false;
-    const dx = Math.abs(from.x - to.x);
-    const dy = Math.abs(from.y - to.y);
-    return (dx === 1 && dy === 0) || (dx === 0 && dy === 1);
-  }
-
-  function isDiagonalAdjacent(from, to) {
-    if (!from || !to || from.z !== to.z) return false;
-    const dx = Math.abs(from.x - to.x);
-    const dy = Math.abs(from.y - to.y);
-    return dx === 1 && dy === 1;
-  }
-
-  function findDiagonalTileNearTarget(playerPosition, targetPosition) {
-    if (typeof Position !== "function") return null;
-    const candidates = [
-      { x: targetPosition.x - 1, y: targetPosition.y - 1 },
-      { x: targetPosition.x + 1, y: targetPosition.y - 1 },
-      { x: targetPosition.x - 1, y: targetPosition.y + 1 },
-      { x: targetPosition.x + 1, y: targetPosition.y + 1 },
-    ];
-    candidates.sort((a, b) => {
-      const da = Math.abs(a.x - playerPosition.x) + Math.abs(a.y - playerPosition.y);
-      const db = Math.abs(b.x - playerPosition.x) + Math.abs(b.y - playerPosition.y);
-      return da - db;
-    });
-    for (const c of candidates) {
-      const tile = window.gameClient?.world?.getTileFromWorldPosition?.(
-        new Position(c.x, c.y, targetPosition.z)
-      );
-      if (tile?.isWalkable?.()) return c;
-    }
-    return null;
-  }
-
   function syncMeleeChase(now = Date.now()) {
     if (!config.meleeMode) return false;
     const target = getEngagedTarget();
@@ -699,46 +690,45 @@ window.__minibiaCopilotBundle.installAutoAttackModule = function installAutoAtta
     const targetPosition = normalizePosition(target.getPosition?.() || target.__position);
     if (!playerPosition || !targetPosition || playerPosition.z !== targetPosition.z) return false;
 
-    if (isDiagonalAdjacent(playerPosition, targetPosition)) {
-      // Already in the sweet spot — clear follow so server stops walking us
-      // into the target, attack from here.
-      if (isSameCreature(getCurrentFollowTarget(), target)) {
-        clearCurrentFollowTarget();
-      }
+    if (isAdjacentTile(playerPosition, targetPosition)) {
       state.lastChaseProgressAt = now;
       state.lastChaseStalledTargetId = null;
+      state.lastChaseDestinationKey = null;
       return false;
-    }
-
-    if (isOrthogonalAdjacent(playerPosition, targetPosition)) {
-      // Orthogonally adjacent (N/S/E/W) — step to a diagonal tile so we can
-      // hit but the monster's melee can't always reach us.
-      const diagonalPos = findDiagonalTileNearTarget(playerPosition, targetPosition);
-      if (diagonalPos && (now - state.lastChaseAt > 300)) {
-        if (isSameCreature(getCurrentFollowTarget(), target)) {
-          clearCurrentFollowTarget();
-        }
-        try {
-          const pathfinder = window.gameClient?.world?.pathfinder;
-          if (pathfinder?.findPath) {
-            pathfinder.findPath(
-              new Position(playerPosition.x, playerPosition.y, playerPosition.z),
-              new Position(diagonalPos.x, diagonalPos.y, targetPosition.z)
-            );
-            state.lastChaseAt = now;
-            state.lastChaseProgressAt = now;
-          }
-        } catch (error) {
-          bot.log("diagonal step failed", { error: error?.message || error });
-        }
-      }
-      return true;
     }
 
     if (checkChaseStall(target, now)) return false;
 
-    setCurrentFollowTarget(target);
-    state.lastChaseAt = now;
+    // Throttled, single pathfind to an adjacent walkable tile. No
+    // FollowPacket spam, no diagonal micromanagement — looks like a
+    // player clicking once to walk to the monster.
+    const chaseThrottle = Math.max(800, Number(config.chaseThrottleMs) || 1200);
+    if (now - state.lastChaseAt < chaseThrottle) return true;
+
+    const adjacentPosition = findReachableAdjacentPosition(targetPosition, playerPosition);
+    if (!adjacentPosition) return false;
+
+    const destinationKey = `${adjacentPosition.x},${adjacentPosition.y},${adjacentPosition.z}`;
+    if (
+      destinationKey === state.lastChaseDestinationKey &&
+      now - state.lastChaseAt < chaseThrottle * 2
+    ) {
+      return true;
+    }
+
+    try {
+      const pathfinder = window.gameClient?.world?.pathfinder;
+      if (pathfinder?.findPath) {
+        pathfinder.findPath(
+          new Position(playerPosition.x, playerPosition.y, playerPosition.z),
+          new Position(adjacentPosition.x, adjacentPosition.y, adjacentPosition.z)
+        );
+        state.lastChaseAt = now;
+        state.lastChaseDestinationKey = destinationKey;
+      }
+    } catch (error) {
+      bot.log("chase pathfind failed", { error: error?.message || error });
+    }
     return true;
   }
 
@@ -893,34 +883,37 @@ window.__minibiaCopilotBundle.installAutoAttackModule = function installAutoAtta
     const lower = String(message || "").toLowerCase();
     const target = getCurrentTarget() || getEngagedTarget();
 
-    if (lower.includes("too far")) {
-      if (target) {
-        skipTarget(target, "server: too far", Date.now(), 2000);
-        bot.log("auto-attack reacted to 'too far' — skipping target", { name: target.name || "Mob" });
-      }
+    // Only react if the SAME cancel reason fires twice for the SAME target
+    // within 4s. One isolated rejection could be a transient (chunk loading,
+    // monster just moved, etc.) — reacting instantly looks bot-like.
+    const reasonKey = (target?.id ?? "no-target") + "|" + (
+      lower.includes("too far") ? "too_far" :
+      lower.includes("no way") ? "no_way" :
+      lower.includes("you cannot attack") ? "cannot_attack" :
+      lower.includes("target lost") ? "target_lost" :
+      ""
+    );
+    if (reasonKey.endsWith("|")) return;
+    const now = Date.now();
+
+    if (state.lastCancelKey !== reasonKey || now - state.lastCancelAt > 4000) {
+      state.lastCancelKey = reasonKey;
+      state.lastCancelAt = now;
       return;
     }
-    if (lower.includes("there is no way") || lower.includes("no way")) {
-      if (target) {
-        skipTarget(target, "server: no path", Date.now(), 3000);
-        bot.log("auto-attack reacted to 'no way' — skipping unreachable target", { name: target.name || "Mob" });
-      }
-      return;
-    }
-    if (lower.includes("you cannot attack")) {
-      if (target) {
-        skipTarget(target, "server: cannot attack", Date.now(), 4000);
-        bot.log("auto-attack reacted to 'cannot attack' — skipping target", { name: target.name || "Mob" });
-      }
-      return;
-    }
-    if (lower.includes("target lost")) {
+
+    // Same rejection twice — real problem. Skip / clear.
+    if (reasonKey.endsWith("target_lost")) {
       clearEngagedTarget();
       clearCurrentTarget();
       clearCurrentFollowTarget();
-      bot.log("auto-attack reacted to 'target lost' — clearing");
-      return;
+      bot.log("auto-attack: 'target lost' confirmed — clearing");
+    } else if (target) {
+      skipTarget(target, "server confirmed: " + reasonKey.split("|")[1], now, 3000);
+      bot.log("auto-attack: server rejected twice — skipping target", { name: target.name || "Mob", reason: reasonKey.split("|")[1] });
     }
+    state.lastCancelKey = null;
+    state.lastCancelAt = 0;
   }
 
   function start(overrides = {}) {
