@@ -3566,8 +3566,7 @@ window.__minibiaCopilotBundle.installAutoAttackModule = function installAutoAtta
     const currentDistance = getTileDistance(playerPosition, targetPosition);
     if (currentDistance >= desiredDistance) return false;
 
-    const kiteThrottle = Math.max(60, Number(config.kiteThrottleMs) || 100);
-    if (now - state.lastChaseAt < kiteThrottle) return true;
+    if (now - state.lastChaseAt < 150) return true;
 
     const monsters = getNearbyMonsters();
     const fleeTo = findFleePosition(playerPosition, monsters, desiredDistance);
@@ -3610,7 +3609,7 @@ window.__minibiaCopilotBundle.installAutoAttackModule = function installAutoAtta
 
     // Same conservative pathfind chase as melee — one click toward an
     // adjacent tile, no follow spam, no diagonal micromanagement.
-    const chaseThrottle = Math.max(100, Number(config.chaseThrottleMs) || 150);
+    const chaseThrottle = Math.max(800, Number(config.chaseThrottleMs) || 1200);
     if (now - state.lastChaseAt < chaseThrottle) return true;
 
     const adjacentPosition = findReachableAdjacentPosition(targetPosition, playerPosition);
@@ -3677,7 +3676,7 @@ window.__minibiaCopilotBundle.installAutoAttackModule = function installAutoAtta
     // Throttled, single pathfind to an adjacent walkable tile. No
     // FollowPacket spam, no diagonal micromanagement — looks like a
     // player clicking once to walk to the monster.
-    const chaseThrottle = Math.max(100, Number(config.chaseThrottleMs) || 150);
+    const chaseThrottle = Math.max(800, Number(config.chaseThrottleMs) || 1200);
     if (now - state.lastChaseAt < chaseThrottle) return true;
 
     const adjacentPosition = findReachableAdjacentPosition(targetPosition, playerPosition);
@@ -4160,7 +4159,6 @@ window.__minibiaCopilotBundle.installCaveModule = function installCaveModule(bot
       idleSnapMs: 5000,
       monsterPauseRange: 7,
       combatStallMs: 10000,
-      walkChunkSize: 10,
       enabled: false,
       activePresetName: defaultPresetName,
     },
@@ -4606,7 +4604,6 @@ window.__minibiaCopilotBundle.installCaveModule = function installCaveModule(bot
 
     return bestIndex;
   }
-
 
   function getTileAt(position) {
     if (!position) {
@@ -5145,61 +5142,19 @@ window.__minibiaCopilotBundle.installCaveModule = function installCaveModule(bot
       return false;
     }
 
-    if (from.x === waypoint.x && from.y === waypoint.y && from.z === waypoint.z) {
-      return false;
-    }
-    if (from.z !== waypoint.z) {
-      // Different floor — let the floor-change machinery handle it. Trying
-      // to walk a direction packet to a tile on another z just fails.
-      return false;
-    }
-
-    // Step-walk: compute the A* path ourselves via pathfinder.search and
-    // send the directions through AutoWalkPacket directly. This bypasses
-    // pathfinder.findPath's client-side cancel messages ("Destination is
-    // too far away", "There is no way", "Walking towards destination...")
-    // so the on-screen log doesn't get spammed when the server is the one
-    // that decides whether a step succeeds.
-    const pathfinder = window.gameClient?.world?.pathfinder;
-    if (!pathfinder || typeof pathfinder.search !== "function") return false;
-
-    const world = window.gameClient?.world;
-    const startTile = world?.getTileFromWorldPosition?.(new Position(from.x, from.y, from.z));
-    const endTile = world?.getTileFromWorldPosition?.(new Position(waypoint.x, waypoint.y, waypoint.z));
-    if (!startTile || !endTile) return false;
-
-    let path;
-    try {
-      path = pathfinder.search(startTile, endTile);
-    } catch (error) {
-      bot.log("cave path search failed", { error: error?.message || error });
-      return false;
-    }
-    if (!Array.isArray(path) || path.length === 0) return false;
-
-    const maxSteps = Math.max(1, Math.min(50, Number(config.walkChunkSize) || 10));
-    const stepsToSend = path.slice(0, maxSteps);
-    const directions = new Array(stepsToSend.length);
-    let cursor = startTile;
-    for (let i = 0; i < stepsToSend.length; i += 1) {
-      const dir = cursor.__position?.getLookDirection?.(stepsToSend[i].__position);
-      if (dir == null) return false;
-      directions[i] = dir;
-      cursor = stepsToSend[i];
-    }
+    const to = new Position(waypoint.x, waypoint.y, waypoint.z);
 
     try {
-      window.gameClient.send(new AutoWalkPacket(directions));
+      window.gameClient?.world?.pathfinder?.findPath?.(from, to);
       state.lastPathAt = Date.now();
-      bot.log("cave step-walk", {
-        steps: directions.length,
-        totalPath: path.length,
-        waypointIndex: state.currentIndex + 1,
+      bot.log("cave pathing to waypoint", {
+        ...waypoint,
+        index: state.currentIndex + 1,
         total: route.length,
       });
       return true;
     } catch (error) {
-      bot.log("cave AutoWalkPacket failed", { error: error?.message || error });
+      bot.log("cave pathing failed", { ...waypoint, error: error?.message || error });
       return false;
     }
   }
@@ -5661,8 +5616,13 @@ window.__minibiaCopilotBundle.installCaveModule = function installCaveModule(bot
   }
 
   function advanceWaypoint() {
-    if (!route.length) return null;
-    if (route.length === 1) return route[0];
+    if (!route.length) {
+      return null;
+    }
+
+    if (route.length === 1) {
+      return route[0];
+    }
 
     let nextIndex = state.currentIndex + state.direction;
 
