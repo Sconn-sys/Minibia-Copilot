@@ -4183,6 +4183,7 @@ window.__minibiaCopilotBundle.installCaveModule = function installCaveModule(bot
     lastObservedPosition: null,
     pendingTransitionSource: null,
     pausedForCombat: false,
+    lapCompleted: new Set(),
   };
   const minimapOverlayState = {
     timerId: null,
@@ -4653,16 +4654,28 @@ window.__minibiaCopilotBundle.installCaveModule = function installCaveModule(bot
     return bestIndex;
   }
 
-  function canSnapForward(targetIndex) {
-    if (!route.length) return false;
-    if (targetIndex === state.currentIndex) return false;
+  function findClosestUncompletedWaypointIndex(position) {
+    if (!position || !route.length) return -1;
+    let bestIndex = -1;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    route.forEach((waypoint, index) => {
+      if (isWaypointCompleted(index)) return;
+      const distance = getDistanceToWaypoint(position, waypoint);
+      if (!Number.isFinite(distance)) return;
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestIndex = index;
+      }
+    });
+    return bestIndex;
+  }
+
+  function canSnapTo(targetIndex) {
     if (route.length <= 1) return false;
-    // Only allow snapping in the direction the route is currently moving.
-    // For a forward circuit (direction +1), only snap to a later index.
-    // For a reverse leg (direction -1), only snap to an earlier index.
-    // This prevents re-walking waypoints we already cleared.
-    if (state.direction >= 0) return targetIndex > state.currentIndex;
-    return targetIndex < state.currentIndex;
+    if (targetIndex < 0 || targetIndex >= route.length) return false;
+    if (targetIndex === state.currentIndex) return false;
+    if (isWaypointCompleted(targetIndex)) return false;
+    return true;
   }
 
   function getTileAt(position) {
@@ -5675,32 +5688,51 @@ window.__minibiaCopilotBundle.installCaveModule = function installCaveModule(bot
     return false;
   }
 
+  function markWaypointCompleted(index) {
+    if (!route.length || index < 0 || index >= route.length) return;
+    if (!state.lapCompleted) state.lapCompleted = new Set();
+    state.lapCompleted.add(index);
+    if (state.lapCompleted.size >= route.length) {
+      state.lapCompleted.clear();
+      bot.log("cave: lap complete — all waypoints visited, starting next lap");
+    }
+  }
+
+  function isWaypointCompleted(index) {
+    if (!state.lapCompleted) return false;
+    return state.lapCompleted.has(index);
+  }
+
   function advanceWaypoint() {
-    if (!route.length) {
-      return null;
+    if (!route.length) return null;
+    if (route.length === 1) return route[0];
+
+    // Mark the waypoint we're leaving as completed for this lap.
+    markWaypointCompleted(state.currentIndex);
+
+    // Circuit mode: always forward, wrap at the end. Skip any waypoints
+    // we've already completed this lap so we don't backtrack.
+    let nextIndex = state.currentIndex;
+    let attempts = 0;
+    while (attempts < route.length) {
+      nextIndex = (nextIndex + 1) % route.length;
+      if (!isWaypointCompleted(nextIndex)) break;
+      attempts += 1;
+    }
+    if (attempts >= route.length) {
+      // Shouldn't reach this (markWaypointCompleted resets when full).
+      state.lapCompleted?.clear();
+      nextIndex = (state.currentIndex + 1) % route.length;
     }
 
-    if (route.length === 1) {
-      return route[0];
-    }
-
-    let nextIndex = state.currentIndex + state.direction;
-
-    if (nextIndex >= route.length) {
-      state.direction = -1;
-      nextIndex = route.length - 2;
-    } else if (nextIndex < 0) {
-      state.direction = 1;
-      nextIndex = 1;
-    }
-
-    state.currentIndex = Math.max(0, Math.min(route.length - 1, nextIndex));
+    state.currentIndex = nextIndex;
+    state.direction = 1;
 
     const nextWaypoint = getCurrentWaypoint();
     bot.log("cave advanced waypoint", {
       index: state.currentIndex + 1,
       total: route.length,
-      direction: state.direction,
+      completedThisLap: state.lapCompleted ? state.lapCompleted.size : 0,
       waypoint: nextWaypoint,
     });
     return nextWaypoint;
@@ -5791,16 +5823,18 @@ window.__minibiaCopilotBundle.installCaveModule = function installCaveModule(bot
         // toward. Snap forward in the current direction so we don't
         // backtrack to a waypoint we already cleared.
         if (position && route.length > 1 && config.snapAfterCombat !== false) {
-          const closestIndex = findClosestWaypointIndex(position);
-          if (canSnapForward(closestIndex)) {
-            bot.log("cave: snapping forward after combat", {
+          const closestIndex = findClosestUncompletedWaypointIndex(position);
+          if (canSnapTo(closestIndex)) {
+            bot.log("cave: snapping to closest uncompleted waypoint after combat", {
               fromIndex: state.currentIndex + 1,
               toIndex: closestIndex + 1,
-              direction: state.direction,
+              completedThisLap: state.lapCompleted ? state.lapCompleted.size : 0,
             });
+            // Mark the current waypoint as visited too — we got dragged off
+            // of it by combat, so the lap shouldn't expect us back.
+            markWaypointCompleted(state.currentIndex);
             state.currentIndex = closestIndex;
-            if (closestIndex >= route.length - 1) state.direction = -1;
-            else if (closestIndex <= 0) state.direction = 1;
+            state.direction = 1;
             state.lastPathAt = 0;
           }
         }
@@ -5812,16 +5846,16 @@ window.__minibiaCopilotBundle.installCaveModule = function installCaveModule(bot
         state.lastProgressAt &&
         now - state.lastProgressAt >= idleSnapMs
       ) {
-        const closestIndex = findClosestWaypointIndex(position);
-        if (canSnapForward(closestIndex)) {
-          bot.log("cave idle: snapping forward to closer waypoint", {
+        const closestIndex = findClosestUncompletedWaypointIndex(position);
+        if (canSnapTo(closestIndex)) {
+          bot.log("cave idle: snapping to closest uncompleted waypoint", {
             fromIndex: state.currentIndex + 1,
             toIndex: closestIndex + 1,
             idleForMs: now - state.lastProgressAt,
           });
+          markWaypointCompleted(state.currentIndex);
           state.currentIndex = closestIndex;
-          if (closestIndex >= route.length - 1) state.direction = -1;
-          else if (closestIndex <= 0) state.direction = 1;
+          state.direction = 1;
           state.lastPathAt = 0;
         } else if (route.length > 1) {
           // Snap says "you're already on the closest waypoint" yet we
@@ -5967,6 +6001,7 @@ window.__minibiaCopilotBundle.installCaveModule = function installCaveModule(bot
     state.lastPositionKey = getPositionKey(position);
     state.lastProgressAt = Date.now();
     state.pausedForCombat = false;
+    state.lapCompleted = new Set();
     if (!state.cancelMessageUnsubscribe && typeof bot.onCancelMessage === "function") {
       state.cancelMessageUnsubscribe = bot.onCancelMessage(handleServerCancel);
     }
@@ -6199,7 +6234,19 @@ window.__minibiaCopilotBundle.installCaveModule = function installCaveModule(bot
     start();
   }
 
+  function clearLap() {
+    state.lapCompleted = new Set();
+    bot.log("cave: lap cleared manually");
+    return true;
+  }
+
+  function getLapCompleted() {
+    return state.lapCompleted ? Array.from(state.lapCompleted) : [];
+  }
+
   bot.cave = {
+    clearLap,
+    getLapCompleted,
     start,
     stop,
     pause,
