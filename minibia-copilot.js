@@ -4653,6 +4653,18 @@ window.__minibiaCopilotBundle.installCaveModule = function installCaveModule(bot
     return bestIndex;
   }
 
+  function canSnapForward(targetIndex) {
+    if (!route.length) return false;
+    if (targetIndex === state.currentIndex) return false;
+    if (route.length <= 1) return false;
+    // Only allow snapping in the direction the route is currently moving.
+    // For a forward circuit (direction +1), only snap to a later index.
+    // For a reverse leg (direction -1), only snap to an earlier index.
+    // This prevents re-walking waypoints we already cleared.
+    if (state.direction >= 0) return targetIndex > state.currentIndex;
+    return targetIndex < state.currentIndex;
+  }
+
   function getTileAt(position) {
     if (!position) {
       return null;
@@ -5776,17 +5788,19 @@ window.__minibiaCopilotBundle.installCaveModule = function installCaveModule(bot
 
         // After a fight (especially kiting), the player may now be much
         // closer to a different waypoint than the one they were heading
-        // toward. Snap to whichever is closest so we don't backtrack.
+        // toward. Snap forward in the current direction so we don't
+        // backtrack to a waypoint we already cleared.
         if (position && route.length > 1 && config.snapAfterCombat !== false) {
           const closestIndex = findClosestWaypointIndex(position);
-          if (closestIndex !== state.currentIndex) {
-            bot.log("cave: snapping to closest waypoint after combat", {
+          if (canSnapForward(closestIndex)) {
+            bot.log("cave: snapping forward after combat", {
               fromIndex: state.currentIndex + 1,
               toIndex: closestIndex + 1,
+              direction: state.direction,
             });
             state.currentIndex = closestIndex;
-            state.direction = closestIndex >= route.length - 1 ? -1 : 1;
-            if (route.length <= 1) state.direction = 1;
+            if (closestIndex >= route.length - 1) state.direction = -1;
+            else if (closestIndex <= 0) state.direction = 1;
             state.lastPathAt = 0;
           }
         }
@@ -5799,15 +5813,15 @@ window.__minibiaCopilotBundle.installCaveModule = function installCaveModule(bot
         now - state.lastProgressAt >= idleSnapMs
       ) {
         const closestIndex = findClosestWaypointIndex(position);
-        if (closestIndex !== state.currentIndex) {
-          bot.log("cave idle: snapping to nearest waypoint", {
+        if (canSnapForward(closestIndex)) {
+          bot.log("cave idle: snapping forward to closer waypoint", {
             fromIndex: state.currentIndex + 1,
             toIndex: closestIndex + 1,
             idleForMs: now - state.lastProgressAt,
           });
           state.currentIndex = closestIndex;
-          state.direction = closestIndex >= route.length - 1 ? -1 : 1;
-          if (route.length <= 1) state.direction = 1;
+          if (closestIndex >= route.length - 1) state.direction = -1;
+          else if (closestIndex <= 0) state.direction = 1;
           state.lastPathAt = 0;
         } else if (route.length > 1) {
           // Snap says "you're already on the closest waypoint" yet we
